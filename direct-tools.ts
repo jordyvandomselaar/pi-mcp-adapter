@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "@mariozechner/pi-coding-agent";
-import type { McpExtensionState } from "./state.js";
+import { getServerNeedsAuth, type McpExtensionState } from "./state.js";
 import type { DirectToolSpec, McpConfig, McpContent } from "./types.js";
 import type { MetadataCache } from "./metadata-cache.js";
 import { lazyConnect, getFailureAgeSeconds } from "./init.js";
@@ -10,7 +10,16 @@ import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js";
 import { formatToolName } from "./types.js";
 import { resourceNameToToolName } from "./resource-tools.js";
 
-const BUILTIN_NAMES = new Set(["read", "bash", "edit", "write", "grep", "find", "ls", "mcp"]);
+const BUILTIN_NAMES = new Set([
+  "read",
+  "bash",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+  "mcp",
+]);
 
 export function resolveDirectTools(
   config: McpConfig,
@@ -70,11 +79,15 @@ export function resolveDirectTools(
       if (toolFilter !== true && !toolFilter.includes(tool.name)) continue;
       const prefixedName = formatToolName(tool.name, serverName, prefix);
       if (BUILTIN_NAMES.has(prefixedName)) {
-        console.warn(`MCP: skipping direct tool "${prefixedName}" (collides with builtin)`);
+        console.warn(
+          `MCP: skipping direct tool "${prefixedName}" (collides with builtin)`,
+        );
         continue;
       }
       if (seenNames.has(prefixedName)) {
-        console.warn(`MCP: skipping duplicate direct tool "${prefixedName}" from "${serverName}"`);
+        console.warn(
+          `MCP: skipping duplicate direct tool "${prefixedName}" from "${serverName}"`,
+        );
         continue;
       }
       seenNames.add(prefixedName);
@@ -95,11 +108,15 @@ export function resolveDirectTools(
         if (toolFilter !== true && !toolFilter.includes(baseName)) continue;
         const prefixedName = formatToolName(baseName, serverName, prefix);
         if (BUILTIN_NAMES.has(prefixedName)) {
-          console.warn(`MCP: skipping direct resource tool "${prefixedName}" (collides with builtin)`);
+          console.warn(
+            `MCP: skipping direct resource tool "${prefixedName}" (collides with builtin)`,
+          );
           continue;
         }
         if (seenNames.has(prefixedName)) {
-          console.warn(`MCP: skipping duplicate direct resource tool "${prefixedName}" from "${serverName}"`);
+          console.warn(
+            `MCP: skipping duplicate direct resource tool "${prefixedName}" from "${serverName}"`,
+          );
           continue;
         }
         seenNames.add(prefixedName);
@@ -126,7 +143,10 @@ export function buildProxyDescription(
 
   const directByServer = new Map<string, number>();
   for (const spec of directSpecs) {
-    directByServer.set(spec.serverName, (directByServer.get(spec.serverName) ?? 0) + 1);
+    directByServer.set(
+      spec.serverName,
+      (directByServer.get(spec.serverName) ?? 0) + 1,
+    );
   }
   if (directByServer.size > 0) {
     const parts = [...directByServer.entries()].map(
@@ -140,7 +160,10 @@ export function buildProxyDescription(
     const entry = cache?.servers?.[serverName];
     const definition = config.mcpServers[serverName];
     const toolCount = entry?.tools?.length ?? 0;
-    const resourceCount = definition?.exposeResources !== false ? (entry?.resources?.length ?? 0) : 0;
+    const resourceCount =
+      definition?.exposeResources !== false
+        ? (entry?.resources?.length ?? 0)
+        : 0;
     const totalItems = toolCount + resourceCount;
     if (totalItems === 0) continue;
     const directCount = directByServer.get(serverName) ?? 0;
@@ -172,7 +195,7 @@ type DirectToolExecute = ToolDefinition["execute"];
 export function createDirectToolExecutor(
   getState: () => McpExtensionState | null,
   getInitPromise: () => Promise<McpExtensionState> | null,
-  spec: DirectToolSpec
+  spec: DirectToolSpec,
 ): DirectToolExecute {
   return async function execute(_toolCallId, params) {
     let state = getState();
@@ -183,7 +206,9 @@ export function createDirectToolExecutor(
         state = await initPromise;
       } catch {
         return {
-          content: [{ type: "text" as const, text: "MCP initialization failed" }],
+          content: [
+            { type: "text" as const, text: "MCP initialization failed" },
+          ],
           details: { error: "init_failed" },
         };
       }
@@ -197,9 +222,31 @@ export function createDirectToolExecutor(
 
     const connected = await lazyConnect(state, spec.serverName);
     if (!connected) {
+      const authRequirement = getServerNeedsAuth(state, spec.serverName);
+      if (authRequirement) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `MCP server "${spec.serverName}" needs authentication. Complete the browser flow and retry.`,
+            },
+          ],
+          details: {
+            error: "needs_auth",
+            server: spec.serverName,
+            message: authRequirement.message,
+          },
+        };
+      }
+
       const failedAgo = getFailureAgeSeconds(state, spec.serverName);
       return {
-        content: [{ type: "text" as const, text: `MCP server "${spec.serverName}" not available${failedAgo !== null ? ` (failed ${failedAgo}s ago)` : ""}` }],
+        content: [
+          {
+            type: "text" as const,
+            text: `MCP server "${spec.serverName}" not available${failedAgo !== null ? ` (failed ${failedAgo}s ago)` : ""}`,
+          },
+        ],
         details: { error: "server_unavailable", server: spec.serverName },
       };
     }
@@ -207,7 +254,12 @@ export function createDirectToolExecutor(
     const connection = state.manager.getConnection(spec.serverName);
     if (!connection || connection.status !== "connected") {
       return {
-        content: [{ type: "text" as const, text: `MCP server "${spec.serverName}" not connected` }],
+        content: [
+          {
+            type: "text" as const,
+            text: `MCP server "${spec.serverName}" not connected`,
+          },
+        ],
         details: { error: "not_connected", server: spec.serverName },
       };
     }
@@ -219,13 +271,23 @@ export function createDirectToolExecutor(
       state.manager.incrementInFlight(spec.serverName);
 
       if (spec.resourceUri) {
-        const result = await connection.client.readResource({ uri: spec.resourceUri });
-        const content = (result.contents ?? []).map(c => ({
+        const result = await connection.client.readResource({
+          uri: spec.resourceUri,
+        });
+        const content = (result.contents ?? []).map((c) => ({
           type: "text" as const,
-          text: "text" in c ? c.text : ("blob" in c ? `[Binary data: ${(c as { mimeType?: string }).mimeType ?? "unknown"}]` : JSON.stringify(c)),
+          text:
+            "text" in c
+              ? c.text
+              : "blob" in c
+                ? `[Binary data: ${(c as { mimeType?: string }).mimeType ?? "unknown"}]`
+                : JSON.stringify(c),
         }));
         return {
-          content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty resource)" }],
+          content:
+            content.length > 0
+              ? content
+              : [{ type: "text" as const, text: "(empty resource)" }],
           details: { server: spec.serverName, resourceUri: spec.resourceUri },
         };
       }
@@ -248,13 +310,19 @@ export function createDirectToolExecutor(
       });
 
       const result = await resultPromise;
-      uiSession?.sendToolResult(result as unknown as import("@modelcontextprotocol/sdk/types.js").CallToolResult);
+      uiSession?.sendToolResult(
+        result as unknown as import("@modelcontextprotocol/sdk/types.js").CallToolResult,
+      );
 
       const mcpContent = (result.content ?? []) as McpContent[];
       const content = transformMcpContent(mcpContent);
 
       if (result.isError) {
-        let errorText = content.filter(c => c.type === "text").map(c => (c as { text: string }).text).join("\n") || "Tool execution failed";
+        let errorText =
+          content
+            .filter((c) => c.type === "text")
+            .map((c) => (c as { text: string }).text)
+            .join("\n") || "Tool execution failed";
         if (spec.inputSchema) {
           errorText += `\n\nExpected parameters:\n${formatSchema(spec.inputSchema)}`;
         }
@@ -264,19 +332,32 @@ export function createDirectToolExecutor(
         };
       }
 
-      const resultText = content.filter(c => c.type === "text").map(c => (c as { text: string }).text).join("\n") || "(empty result)";
+      const resultText =
+        content
+          .filter((c) => c.type === "text")
+          .map((c) => (c as { text: string }).text)
+          .join("\n") || "(empty result)";
       if (hasUi) {
         const uiMessage = uiSession?.reused
           ? "Updated the open UI."
           : "📺 Interactive UI is now open in your browser. I'll respond to your prompts and intents as you interact with it.";
         return {
-          content: [{ type: "text" as const, text: `${resultText}\n\n${uiMessage}` }],
-          details: { server: spec.serverName, tool: spec.originalName, uiOpen: true },
+          content: [
+            { type: "text" as const, text: `${resultText}\n\n${uiMessage}` },
+          ],
+          details: {
+            server: spec.serverName,
+            tool: spec.originalName,
+            uiOpen: true,
+          },
         };
       }
 
       return {
-        content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }],
+        content:
+          content.length > 0
+            ? content
+            : [{ type: "text" as const, text: "(empty result)" }],
         details: { server: spec.serverName, tool: spec.originalName },
       };
     } catch (error) {

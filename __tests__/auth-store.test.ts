@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  mkdirSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -93,11 +99,13 @@ describe("auth-store", () => {
     };
 
     expect(createAuthFingerprintFromServer(serverDefinition)).toBe(second);
-    expect(buildAuthFingerprintSeed({
-      serverUrl: "https://api.example.com/mcp",
-      issuer: "https://auth.example.com",
-      clientMetadataUrl: "https://client.example.com/pi.json",
-    })).toEqual({
+    expect(
+      buildAuthFingerprintSeed({
+        serverUrl: "https://api.example.com/mcp",
+        issuer: "https://auth.example.com",
+        clientMetadataUrl: "https://client.example.com/pi.json",
+      }),
+    ).toEqual({
       serverUrl: "https://api.example.com/mcp",
       issuer: "https://auth.example.com/",
       grantType: "authorization_code",
@@ -138,32 +146,40 @@ describe("auth-store", () => {
         clientId: "env-client-456",
       });
 
-      expect(createAuthFingerprintFromServer(envDefinition)).toBe(sameAsExplicit);
-      expect(createAuthFingerprintFromServer({
-        ...envDefinition,
-        auth: {
-          type: "oauth",
-          grantType: "client_credentials",
-          client: {
-            information: {
-              clientIdEnv: "PI_TEST_OTHER_CLIENT_ID",
+      expect(createAuthFingerprintFromServer(envDefinition)).toBe(
+        sameAsExplicit,
+      );
+      expect(
+        createAuthFingerprintFromServer({
+          ...envDefinition,
+          auth: {
+            type: "oauth",
+            grantType: "client_credentials",
+            client: {
+              information: {
+                clientIdEnv: "PI_TEST_OTHER_CLIENT_ID",
+              },
             },
           },
-        },
-      })).toBe(differentExplicit);
+        }),
+      ).toBe(differentExplicit);
       expect(sameAsExplicit).not.toBe(differentExplicit);
     } finally {
       if (originalPrimary === undefined) delete process.env.PI_TEST_CLIENT_ID;
       else process.env.PI_TEST_CLIENT_ID = originalPrimary;
 
-      if (originalSecondary === undefined) delete process.env.PI_TEST_OTHER_CLIENT_ID;
+      if (originalSecondary === undefined)
+        delete process.env.PI_TEST_OTHER_CLIENT_ID;
       else process.env.PI_TEST_OTHER_CLIENT_ID = originalSecondary;
     }
   });
 
   it("persists durable tokens/client data separately from ephemeral verifier state", () => {
     const rootDir = makeTempDir();
-    const store = new FileAuthStore({ rootDir, legacyRootDir: join(rootDir, "legacy") });
+    const store = new FileAuthStore({
+      rootDir,
+      legacyRootDir: join(rootDir, "legacy"),
+    });
     const fingerprint = "fp-storage";
     const seed = buildAuthFingerprintSeed({
       serverUrl: "https://api.example.com/mcp",
@@ -231,7 +247,10 @@ describe("auth-store", () => {
     store.invalidate(fingerprint, "verifier");
     expect(store.loadCodeVerifier(fingerprint)).toBeUndefined();
 
-    store.saveTokens(fingerprint, { access_token: "fresh-token", token_type: "bearer" });
+    store.saveTokens(fingerprint, {
+      access_token: "fresh-token",
+      token_type: "bearer",
+    });
     store.invalidate(fingerprint, "all");
     expect(store.loadRecord(fingerprint)).toBeUndefined();
   });
@@ -257,7 +276,9 @@ describe("auth-store", () => {
       state: "state-1",
       codeVerifier: "verifier-1",
     });
-    expect(sessions.getByFingerprint("fingerprint-1")?.sessionId).toBe("session-1");
+    expect(sessions.getByFingerprint("fingerprint-1")?.sessionId).toBe(
+      "session-1",
+    );
     expect(sessions.getByState("state-1")?.sessionId).toBe("session-1");
     expect(sessions.list()).toHaveLength(1);
 
@@ -282,7 +303,10 @@ describe("auth-store", () => {
       "utf-8",
     );
 
-    const imported = store.maybeMigrateLegacyTokens(fingerprint, "legacy-server");
+    const imported = store.maybeMigrateLegacyTokens(
+      fingerprint,
+      "legacy-server",
+    );
     expect(imported).toMatchObject({
       access_token: "legacy-access",
       refresh_token: "legacy-refresh",
@@ -298,7 +322,9 @@ describe("auth-store", () => {
       JSON.stringify({ access_token: "changed-legacy", token_type: "bearer" }),
       "utf-8",
     );
-    expect(store.maybeMigrateLegacyTokens(fingerprint, "legacy-server")).toMatchObject({
+    expect(
+      store.maybeMigrateLegacyTokens(fingerprint, "legacy-server"),
+    ).toMatchObject({
       access_token: "legacy-access",
     });
     expect(store.loadTokens(fingerprint)?.access_token).toBe("legacy-access");
@@ -327,10 +353,17 @@ describe("auth-store", () => {
       "utf-8",
     );
 
-    const skipped = store.maybeMigrateLegacyTokens(conflictFingerprint, "conflict-server");
+    const skipped = store.maybeMigrateLegacyTokens(
+      conflictFingerprint,
+      "conflict-server",
+    );
     expect(skipped).toMatchObject({ access_token: "durable-access" });
-    expect(store.getMigrationReceipt("conflict-server")?.status).toBe("skipped-existing");
-    expect(store.loadTokens(conflictFingerprint)?.access_token).toBe("durable-access");
+    expect(store.getMigrationReceipt("conflict-server")?.status).toBe(
+      "skipped-existing",
+    );
+    expect(store.loadTokens(conflictFingerprint)?.access_token).toBe(
+      "durable-access",
+    );
   });
 
   it("serves migrated legacy tokens through the durable lookup helper and ignores expired entries", () => {
@@ -365,7 +398,9 @@ describe("auth-store", () => {
     const fingerprint = createAuthFingerprintFromServer(definition);
     expect(fingerprint).toBeTruthy();
     expect(store.getMigrationReceipt("legacy-server")?.status).toBe("imported");
-    expect(store.loadTokens(fingerprint!, { serverName: "legacy-server" })).toMatchObject({
+    expect(
+      store.loadTokens(fingerprint!, { serverName: "legacy-server" }),
+    ).toMatchObject({
       access_token: "legacy-access",
       refresh_token: "legacy-refresh",
       token_type: "bearer",
@@ -378,6 +413,45 @@ describe("auth-store", () => {
     });
 
     expect(getStoredTokens("legacy-server", definition, store)).toBeUndefined();
+  });
+
+  it("migrates legacy tokens when the SDK provider store loads them for the first time", () => {
+    const rootDir = makeTempDir();
+    const legacyRootDir = join(rootDir, "legacy");
+    const store = new FileAuthStore({ rootDir, legacyRootDir });
+    const definition: ServerEntry = {
+      url: "https://api.example.com/mcp",
+      auth: {
+        type: "oauth",
+        grantType: "authorization_code",
+      },
+    };
+    const fingerprint = createAuthFingerprintFromServer(definition)!;
+
+    mkdirSync(join(legacyRootDir, "legacy-server"), { recursive: true });
+    writeFileSync(
+      join(legacyRootDir, "legacy-server", "tokens.json"),
+      JSON.stringify({
+        access_token: "legacy-access",
+        refresh_token: "legacy-refresh",
+        token_type: "bearer",
+      }),
+      "utf-8",
+    );
+
+    const providerStore = store.createProviderStore(fingerprint, {
+      serverName: "legacy-server",
+    });
+
+    expect(providerStore.loadTokens()).toMatchObject({
+      access_token: "legacy-access",
+      refresh_token: "legacy-refresh",
+      token_type: "bearer",
+    });
+    expect(store.getMigrationReceipt("legacy-server")?.status).toBe("imported");
+    expect(
+      store.loadRecord(fingerprint)?.migratedFromLegacyServerNames,
+    ).toEqual(["legacy-server"]);
   });
 
   it("redacts secrets for logs while keeping durable persistence intact", () => {

@@ -1,13 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { InteractiveAuthorizationRequiredError } from "../auth-provider.js";
-import { clearServerNeedsAuth, markServerNeedsAuth, type McpExtensionState } from "../state.js";
+import { InvalidAuthCallbackError } from "../auth-session-manager.js";
+import {
+  clearServerNeedsAuth,
+  markServerNeedsAuth,
+  type McpExtensionState,
+} from "../state.js";
 import type { McpServerManager } from "../server-manager.js";
 
 const loadMetadataCache = vi.fn(() => ({ version: 1, servers: {} }));
 const saveMetadataCache = vi.fn();
 
 vi.mock("../metadata-cache.js", async () => {
-  const actual = await vi.importActual<typeof import("../metadata-cache.js")>("../metadata-cache.js");
+  const actual = await vi.importActual<typeof import("../metadata-cache.js")>(
+    "../metadata-cache.js",
+  );
   return {
     ...actual,
     loadMetadataCache,
@@ -80,12 +87,54 @@ describe("lazyConnect", () => {
     expect(saveMetadataCache).not.toHaveBeenCalled();
   });
 
+  it("keeps callback failures in needs-auth state without leaking raw OAuth callback details", async () => {
+    const manager = {
+      getConnection: vi.fn().mockReturnValue(undefined),
+      connect: vi
+        .fn()
+        .mockRejectedValue(
+          new InvalidAuthCallbackError(
+            "OAuth callback returned error: access_denied code=secret-code&state=secret-state",
+          ),
+        ),
+    } as unknown as McpServerManager;
+
+    const state = createState(manager);
+    const { lazyConnect } = await import("../init.js");
+
+    await expect(lazyConnect(state, "demo")).resolves.toBe(false);
+
+    expect(state.authRequirements.get("demo")).toMatchObject({
+      serverName: "demo",
+      reason: "user",
+      message:
+        'Browser sign-in callback for "demo" did not complete successfully. Retry authentication to continue.',
+    });
+    expect(state.failureTracker.has("demo")).toBe(false);
+    expect(state.authRequirements.get("demo")?.message).not.toContain(
+      "secret-code",
+    );
+    expect(state.authRequirements.get("demo")?.message).not.toContain(
+      "secret-state",
+    );
+    expect(state.authRequirements.get("demo")?.message).not.toContain(
+      "access_denied",
+    );
+    expect(saveMetadataCache).not.toHaveBeenCalled();
+  });
+
   it("clears needs-auth and refreshes metadata cache after a successful user reconnect", async () => {
-    let connection: {
-      status: "connected";
-      tools: Array<{ name: string; description: string; inputSchema: unknown }>;
-      resources: [];
-    } | undefined;
+    let connection:
+      | {
+          status: "connected";
+          tools: Array<{
+            name: string;
+            description: string;
+            inputSchema: unknown;
+          }>;
+          resources: [];
+        }
+      | undefined;
 
     const manager = {
       getConnection: vi.fn(() => connection),
@@ -106,19 +155,28 @@ describe("lazyConnect", () => {
     } as unknown as McpServerManager;
 
     const state = createState(manager);
-    markServerNeedsAuth(state, "demo", { reason: "reconnect", message: "auth required" });
+    markServerNeedsAuth(state, "demo", {
+      reason: "reconnect",
+      message: "auth required",
+    });
     state.failureTracker.set("demo", Date.now());
 
     const { lazyConnect } = await import("../init.js");
     await expect(lazyConnect(state, "demo")).resolves.toBe(true);
 
-    expect(manager.connect).toHaveBeenCalledWith("demo", state.config.mcpServers.demo, {
-      interactiveAllowed: true,
-      interactionReason: "user",
-    });
+    expect(manager.connect).toHaveBeenCalledWith(
+      "demo",
+      state.config.mcpServers.demo,
+      {
+        interactiveAllowed: true,
+        interactionReason: "user",
+      },
+    );
     expect(state.authRequirements.has("demo")).toBe(false);
     expect(state.failureTracker.has("demo")).toBe(false);
-    expect(state.toolMetadata.get("demo")?.map((tool) => tool.name)).toEqual(["demo_ping"]);
+    expect(state.toolMetadata.get("demo")?.map((tool) => tool.name)).toEqual([
+      "demo_ping",
+    ]);
     expect(saveMetadataCache).toHaveBeenCalledWith(
       expect.objectContaining({
         version: 1,
