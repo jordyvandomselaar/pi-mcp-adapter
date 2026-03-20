@@ -2,13 +2,19 @@ import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-age
 import type { AuthInteractionReason } from "./auth-provider.js";
 import {
   clearServerNeedsAuth,
+  getServerNeedsAuth,
   isNeedsAuthError,
   markServerNeedsAuth,
   serverNeedsAuth,
   type McpExtensionState,
 } from "./state.js";
-import type { McpConfig, ServerEntry, McpPanelCallbacks, McpPanelResult, ServerDefinition } from "./types.js";
-import { getOAuthAuthConfig, getServerAuthType } from "./types.js";
+import type { McpPanelCallbacks, McpPanelResult, ResolvedOAuthAuthConfig, ServerDefinition } from "./types.js";
+import {
+  getResolvedOAuthAuthConfig,
+  getServerAuthType,
+  usesClientCredentialsOAuth,
+  usesInteractiveOAuth,
+} from "./types.js";
 import {
   AuthSessionCancelledError,
   AuthSessionError,
@@ -50,13 +56,105 @@ interface IntentionalReconnectResult {
   level: "info" | "warning" | "error";
 }
 
-function usesInteractiveOAuth(definition: ServerDefinition | undefined): boolean {
-  const oauth = definition ? getOAuthAuthConfig(definition) : undefined;
-  if (!oauth) {
-    return false;
+function describeOAuthClient(auth: ResolvedOAuthAuthConfig): string {
+  const clientId = auth.client?.information?.clientId;
+  if (clientId) {
+    return `static client information (${clientId})`;
   }
 
-  return (oauth.grantType ?? "authorization_code") === "authorization_code";
+  if (auth.client?.metadataUrl) {
+    return `client metadata URL (${auth.client.metadataUrl})`;
+  }
+
+  if (auth.client?.metadata) {
+    return "inline client metadata";
+  }
+
+  return "SDK-managed registration defaults";
+}
+
+function getAuthStatusSummary(
+  state: McpExtensionState,
+  serverName: string,
+  definition: ServerDefinition,
+): { summary: string; note?: string } {
+  const requirement = getServerNeedsAuth(state, serverName);
+  const connection = state.manager.getConnection(serverName);
+  const hasStoredTokens = getStoredTokens(serverName, definition) !== undefined;
+
+  if (connection?.status === "connected") {
+    return { summary: "connected" };
+  }
+
+  if (requirement) {
+    return {
+      summary: usesClientCredentialsOAuth(definition)
+        ? "authentication required"
+        : "browser sign-in required",
+      note: requirement.message,
+    };
+  }
+
+  if (usesInteractiveOAuth(definition)) {
+    return {
+      summary: hasStoredTokens ? "stored tokens available" : "browser sign-in required",
+    };
+  }
+
+  if (usesClientCredentialsOAuth(definition)) {
+    return {
+      summary: hasStoredTokens
+        ? "cached machine token available"
+        : "ready for non-interactive token exchange",
+    };
+  }
+
+  return { summary: "ready" };
+}
+
+function buildAuthSummaryLines(
+  state: McpExtensionState,
+  serverName: string,
+  definition: ServerDefinition,
+): string[] {
+  const auth = getResolvedOAuthAuthConfig(definition);
+  if (!auth) {
+    return [`${serverName}: not configured for OAuth`];
+  }
+
+  const status = getAuthStatusSummary(state, serverName, definition);
+  const lines = [
+    `${serverName}: ${status.summary}`,
+    `  flow: ${auth.grantType}`,
+    `  registration: ${auth.registration.mode}`,
+    `  client: ${describeOAuthClient(auth)}`,
+  ];
+
+  if (status.note) {
+    lines.push(`  last issue: ${status.note}`);
+  }
+
+  return lines;
+}
+
+export async function showAuthOverview(state: McpExtensionState, ctx: ExtensionContext): Promise<void> {
+  if (!ctx.hasUI) return;
+
+  const entries = Object.entries(state.config.mcpServers)
+    .filter(([, definition]) => getServerAuthType(definition) === "oauth");
+
+  if (entries.length === 0) {
+    ctx.ui.notify("No OAuth-authenticated MCP servers are configured.", "info");
+    return;
+  }
+
+  const lines = ["MCP Auth:", ""];
+  for (const [serverName, definition] of entries) {
+    lines.push(...buildAuthSummaryLines(state, serverName, definition), "");
+  }
+  lines.push("Use /mcp-auth to show this summary again, or /mcp-auth <server> to start or retry authentication for a specific server.");
+
+  ctx.ui.notify(lines.join("\n"), "info");
 }
 
 function summarizeAuthSessionFailure(serverName: string, error: AuthSessionError): string {
@@ -213,7 +311,7 @@ export async function reconnectServers(
   }
 
   const entries = targetServer
-    ? [[targetServer, state.config.mcpServers[targetServer]] as [string, ServerEntry]]
+    ? [[targetServer, state.config.mcpServers[targetServer]] as [string, ServerDefinition]]
     : Object.entries(state.config.mcpServers);
 
   for (const [name, definition] of entries) {
@@ -231,13 +329,13 @@ export async function reconnectServers(
 }
 
 export async function authenticateServer(
+  state: McpExtensionState,
   serverName: string,
-  config: McpConfig,
-  ctx: ExtensionContext
+  ctx: ExtensionContext,
 ): Promise<void> {
   if (!ctx.hasUI) return;
 
-  const definition = config.mcpServers[serverName];
+  const definition = state.config.mcpServers[serverName];
   if (!definition) {
     ctx.ui.notify(`Server "${serverName}" not found in config`, "error");
     return;
@@ -262,21 +360,40 @@ export async function authenticateServer(
     return;
   }
 
-  const tokenPath = `~/.pi/agent/mcp-oauth/${serverName}/tokens.json`;
+  const auth = getResolvedOAuthAuthConfig(definition);
+  if (!auth) {
+    ctx.ui.notify(`OAuth configuration for "${serverName}" is incomplete.`, "error");
+    return;
+  }
 
-  ctx.ui.notify(
-    `OAuth setup for "${serverName}":\n\n` +
-    `1. Obtain an access token from your OAuth provider\n` +
-    `2. Create the token file:\n` +
-    `   ${tokenPath}\n\n` +
-    `3. Add your token:\n` +
-    `   {\n` +
-    `     "access_token": "your-token-here",\n` +
-    `     "token_type": "bearer"\n` +
-    `   }\n\n` +
-    `4. Run /mcp reconnect to connect with the token`,
-    "info"
-  );
+  const introLines = [
+    `MCP auth for "${serverName}":`,
+    ...buildAuthSummaryLines(state, serverName, definition),
+    "",
+    usesInteractiveOAuth(definition)
+      ? "Starting browser-based authorization_code auth. Pi will open your system browser only if fresh sign-in is required."
+      : "Starting non-interactive client_credentials auth. No browser will open; Pi will request a token with the configured client credentials.",
+  ];
+
+  if (definition.auth === "oauth") {
+    introLines.push("Compatibility note: legacy auth: \"oauth\" config defaults to authorization_code with automatic registration.");
+  }
+
+  ctx.ui.notify(introLines.join("\n"), "info");
+
+  const result = await reconnectServerWithUserIntent(state, serverName, definition);
+  updateStatusBar(state);
+  ctx.ui.notify(result.message, result.level);
+  if (result.connected && result.failedTools > 0) {
+    ctx.ui.notify(`MCP: ${serverName} - ${result.failedTools} tools skipped`, "warning");
+  }
+
+  if (usesClientCredentialsOAuth(definition) && !result.connected && !serverNeedsAuth(state, serverName)) {
+    ctx.ui.notify(
+      `MCP: ${serverName} uses client_credentials, so retries remain non-interactive. Check the configured client credentials or token endpoint settings.`,
+      "warning",
+    );
+  }
 }
 
 export async function openMcpPanel(

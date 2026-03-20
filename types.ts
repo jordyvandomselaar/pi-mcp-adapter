@@ -3,6 +3,7 @@ import type { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdi
 import type { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { TextContent, ImageContent } from "@mariozechner/pi-ai";
+import type { UiStreamMode } from "./ui-stream-types.js";
 
 // Transport type (stdio + HTTP)
 export type Transport = 
@@ -265,6 +266,9 @@ export type LegacyAuthMode = "oauth" | "bearer";
 export type OAuthGrantType = "authorization_code" | "client_credentials";
 export type OAuthRegistrationMode = "auto" | "static" | "metadata-url" | "dynamic";
 
+export const DEFAULT_OAUTH_GRANT_TYPE: OAuthGrantType = "authorization_code";
+export const DEFAULT_OAUTH_REGISTRATION_MODE: OAuthRegistrationMode = "auto";
+
 export interface OAuthClientInformationConfig {
   clientId: string;
   clientSecret?: string;
@@ -297,16 +301,27 @@ export interface OAuthClientConfig {
   metadata?: OAuthClientMetadataConfig;
 }
 
+export interface OAuthRegistrationConfig {
+  mode?: OAuthRegistrationMode;
+}
+
+export interface ResolvedOAuthRegistrationConfig {
+  mode: OAuthRegistrationMode;
+}
+
 export interface OAuthAuthConfig {
   type: "oauth";
   grantType?: OAuthGrantType;
   issuer?: string;
   scope?: string;
   resource?: string;
-  registration?: {
-    mode?: OAuthRegistrationMode;
-  };
+  registration?: OAuthRegistrationConfig;
   client?: OAuthClientConfig;
+}
+
+export interface ResolvedOAuthAuthConfig extends Omit<OAuthAuthConfig, "grantType" | "registration"> {
+  grantType: OAuthGrantType;
+  registration: ResolvedOAuthRegistrationConfig;
 }
 
 export interface BearerAuthConfig {
@@ -364,6 +379,38 @@ export function getOAuthAuthConfig(definition: ServerEntry): OAuthAuthConfig | u
   return definition.auth && typeof definition.auth === "object" && definition.auth.type === "oauth"
     ? definition.auth
     : undefined;
+}
+
+export function getResolvedOAuthAuthConfig(definition: ServerEntry): ResolvedOAuthAuthConfig | undefined {
+  const auth = getOAuthAuthConfig(definition);
+  if (!auth) {
+    return undefined;
+  }
+
+  return {
+    ...auth,
+    grantType: auth.grantType ?? DEFAULT_OAUTH_GRANT_TYPE,
+    registration: {
+      ...auth.registration,
+      mode: auth.registration?.mode ?? DEFAULT_OAUTH_REGISTRATION_MODE,
+    },
+  };
+}
+
+export function getOAuthGrantType(definition: ServerEntry): OAuthGrantType | undefined {
+  return getResolvedOAuthAuthConfig(definition)?.grantType;
+}
+
+export function getOAuthRegistrationMode(definition: ServerEntry): OAuthRegistrationMode | undefined {
+  return getResolvedOAuthAuthConfig(definition)?.registration.mode;
+}
+
+export function usesInteractiveOAuth(definition: ServerEntry): boolean {
+  return getOAuthGrantType(definition) === "authorization_code";
+}
+
+export function usesClientCredentialsOAuth(definition: ServerEntry): boolean {
+  return getOAuthGrantType(definition) === "client_credentials";
 }
 
 export function getBearerAuthConfig(definition: ServerEntry): BearerAuthConfig | undefined {

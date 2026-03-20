@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@mariozechner/pi-coding-agent";
 import type { McpExtensionState } from "./state.js";
 import { Type } from "@sinclair/typebox";
-import { showStatus, showTools, reconnectServers, authenticateServer, openMcpPanel } from "./commands.js";
+import { showStatus, showTools, reconnectServers, authenticateServer, openMcpPanel, showAuthOverview } from "./commands.js";
 import { loadMcpConfig } from "./config.js";
 import { buildProxyDescription, createDirectToolExecutor, resolveDirectTools } from "./direct-tools.js";
 import { flushMetadataCache, initializeMcp, updateStatusBar } from "./init.js";
@@ -79,7 +79,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("mcp", {
-    description: "Show MCP server status",
+    description: "Show the MCP panel/status and manage server connections",
     handler: async (args, ctx) => {
       if (!state && initPromise) {
         try {
@@ -119,14 +119,8 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("mcp-auth", {
-    description: "Authenticate with an MCP server (OAuth)",
+    description: "Show MCP auth status or start auth for a specific OAuth server",
     handler: async (args, ctx) => {
-      const serverName = args?.trim();
-      if (!serverName) {
-        if (ctx.hasUI) ctx.ui.notify("Usage: /mcp-auth <server-name>", "error");
-        return;
-      }
-
       if (!state && initPromise) {
         try {
           state = await initPromise;
@@ -140,7 +134,26 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         return;
       }
 
-      await authenticateServer(serverName, state.config, ctx);
+      const value = args?.trim() ?? "";
+      if (!value || value === "status") {
+        await showAuthOverview(state, ctx);
+        return;
+      }
+
+      if (value === "help") {
+        if (ctx.hasUI) {
+          ctx.ui.notify(
+            "Usage:\n" +
+            "  /mcp-auth           Show OAuth auth status for configured MCP servers\n" +
+            "  /mcp-auth status    Show the same auth status summary\n" +
+            "  /mcp-auth <server>  Start or retry auth for one OAuth-configured server",
+            "info",
+          );
+        }
+        return;
+      }
+
+      await authenticateServer(state, value, ctx);
     },
   });
 
