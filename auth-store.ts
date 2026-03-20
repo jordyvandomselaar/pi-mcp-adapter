@@ -8,8 +8,12 @@ import type {
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { logger } from "./logger.js";
-import type { OAuthGrantType, ServerEntry } from "./types.js";
-import { getOAuthAuthConfig } from "./types.js";
+import type {
+  OAuthGrantType,
+  OAuthRegistrationMode,
+  ServerEntry,
+} from "./types.js";
+import { getResolvedOAuthAuthConfig } from "./types.js";
 
 const AUTH_STORE_VERSION = 1;
 const AUTH_STORE_ROOT = join(homedir(), ".pi", "agent", "mcp-auth");
@@ -26,7 +30,9 @@ export interface StoredOAuthTokens extends OAuthTokens {
 export interface AuthFingerprintInput {
   serverUrl: string | URL;
   issuer?: string | URL;
+  resource?: string | URL;
   grantType?: OAuthGrantType;
+  registrationMode?: OAuthRegistrationMode;
   clientId?: string;
   clientMetadataUrl?: string | URL;
   clientMetadata?: Partial<OAuthClientMetadata> | Record<string, unknown>;
@@ -34,8 +40,9 @@ export interface AuthFingerprintInput {
 
 export interface AuthFingerprintSeed {
   serverUrl: string;
-  issuer?: string;
+  resource?: string;
   grantType: OAuthGrantType;
+  registrationMode: OAuthRegistrationMode;
   clientIdentity: string;
 }
 
@@ -307,6 +314,7 @@ export class FileAuthStore {
           seed: {
             serverUrl: "unknown",
             grantType: "authorization_code",
+            registrationMode: "auto",
             clientIdentity: "default",
           },
           updatedAt: Date.now(),
@@ -403,6 +411,7 @@ export function getStoredTokens(
   serverName: string,
   definition: ServerEntry,
   authStore: FileAuthStore = defaultAuthStore,
+  options: { includeExpired?: boolean } = {},
 ): OAuthTokens | undefined {
   const fingerprint = createAuthFingerprintFromServer(definition);
   if (!fingerprint) {
@@ -414,7 +423,7 @@ export function getStoredTokens(
     return undefined;
   }
 
-  if (stored.expiresAt && Date.now() > stored.expiresAt) {
+  if (!options.includeExpired && stored.expiresAt && Date.now() > stored.expiresAt) {
     return undefined;
   }
 
@@ -439,8 +448,9 @@ export function getDefaultLegacyOAuthRoot(): string {
 export function buildAuthFingerprintSeed(input: AuthFingerprintInput): AuthFingerprintSeed {
   return {
     serverUrl: normalizeUrlLike(input.serverUrl),
-    issuer: input.issuer ? normalizeUrlLike(input.issuer) : undefined,
+    resource: input.resource ? normalizeUrlLike(input.resource) : undefined,
     grantType: input.grantType ?? "authorization_code",
+    registrationMode: input.registrationMode ?? "auto",
     clientIdentity: resolveClientIdentity(input),
   };
 }
@@ -457,7 +467,7 @@ export function createAuthFingerprintFromServer(definition: ServerEntry): string
 }
 
 export function getAuthFingerprintInputFromServer(definition: ServerEntry): AuthFingerprintInput | undefined {
-  const oauth = getOAuthAuthConfig(definition);
+  const oauth = getResolvedOAuthAuthConfig(definition);
   if (!definition.url || !oauth) {
     return undefined;
   }
@@ -465,7 +475,9 @@ export function getAuthFingerprintInputFromServer(definition: ServerEntry): Auth
   return {
     serverUrl: definition.url,
     issuer: oauth.issuer,
+    resource: oauth.resource,
     grantType: oauth.grantType,
+    registrationMode: oauth.registration.mode,
     clientId: resolveConfiguredValue(
       oauth.client?.information?.clientId,
       oauth.client?.information?.clientIdEnv,
@@ -540,6 +552,28 @@ function resolveConfiguredValue(value?: string, envName?: string): string | unde
 }
 
 function resolveClientIdentity(input: AuthFingerprintInput): string {
+  const mode = input.registrationMode ?? "auto";
+
+  if (mode === "static") {
+    return input.clientId ? `client_id:${input.clientId}` : "static";
+  }
+
+  if (mode === "metadata-url") {
+    return input.clientMetadataUrl
+      ? `metadata_url:${normalizeUrlLike(input.clientMetadataUrl)}`
+      : "metadata-url";
+  }
+
+  if (mode === "dynamic") {
+    if (input.clientMetadata && Object.keys(input.clientMetadata).length > 0) {
+      const normalizedMetadata = normalizeFingerprintMetadata(input.clientMetadata);
+      const digest = createHash("sha256").update(stableStringify(normalizedMetadata)).digest("hex");
+      return `dynamic:${digest}`;
+    }
+
+    return "dynamic";
+  }
+
   if (input.clientId) {
     return `client_id:${input.clientId}`;
   }

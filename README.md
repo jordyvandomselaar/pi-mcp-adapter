@@ -112,7 +112,7 @@ For static bearer tokens, keep using either `auth: "bearer"` or the object form:
 
 OAuth is available for HTTP transports only. Pi now uses the MCP SDK's auth-aware HTTP flow. Use either the legacy shorthand `auth: "oauth"` or the richer object form. The shorthand remains a compatibility alias for browser-based `authorization_code` with automatic registration (`grantType: "authorization_code"`, `registration.mode: "auto"`). For interactive auth, Pi reuses durable auth state and silent refresh first, then intentionally opens your system browser and completes the flow through a local `127.0.0.1` loopback callback if fresh sign-in is still required. There is no embedded browser or manual token copy/paste path.
 
-The auth object also accepts `issuer`, `scope`, and `resource` when the upstream server requires them.
+The auth object also accepts `scope` and `resource` when the upstream server requires them. `resource` overrides the RFC 8707 resource indicator selection, as long as it remains compatible with the MCP server URL / protected resource metadata. `issuer` is reserved for future auth-server discovery overrides and should be omitted for now.
 
 ```json
 {
@@ -392,7 +392,7 @@ Tool names are fuzzy-matched on hyphens and underscores — `context7_resolve_li
 | Browser sign-in opened but never completed | Make sure the browser can reach a local callback on `127.0.0.1`, the auth server allows loopback redirects, and your system browser is the one completing the flow, then retry `/mcp auth <server>` (or `/mcp-auth <server>`). |
 | Provider rejects the redirect URI or callback | Confirm the provider allows `http://127.0.0.1:<port>/...` loopback redirects. Pi uses the system browser + loopback callback only; there is no manual copy/paste fallback. |
 | Server stays in `needs-auth` after a failed sign-in | Retry `/mcp auth <server>` (or `/mcp-auth <server>`). Cancelled, expired, rejected, or callback-failed browser attempts intentionally stay in `needs-auth` until you retry. |
-| `client_credentials` keeps failing | Check `clientId` / `clientSecret`, env var names, and any required `issuer`, `scope`, or `resource` hints. Pi will not open a browser for this flow. |
+| `client_credentials` keeps failing | Check `clientId` / `clientSecret`, env var names, and any required `scope` or `resource` hints. Pi will not open a browser for this flow. |
 | `registration.mode: "auto"` picked the wrong strategy | Set `registration.mode` explicitly to `static`, `metadata-url`, or `dynamic`. The default order is static client info -> metadata URL/CIMD -> dynamic registration. |
 | You had old tokens under `~/.pi/agent/mcp-oauth/...` | They are imported into `~/.pi/agent/mcp-auth` on first use when possible. If migration cannot be used, rerun `/mcp auth <server>` (or `/mcp-auth <server>`) to establish fresh auth. |
 | An HTTP server reports auth errors | Treat it as auth, not transport selection. StreamableHTTP only falls back to SSE for transport incompatibility, not `401`/`403` or refresh failures. |

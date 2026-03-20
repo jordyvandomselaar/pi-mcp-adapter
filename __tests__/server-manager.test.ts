@@ -318,4 +318,140 @@ describe("McpServerManager HTTP transport selection", () => {
       harness.cleanup();
     }
   });
+
+  it("enforces registration.mode static with a clear config error", async () => {
+    const harness = createTestManager({
+      connectHandler: async () => {
+        throw new Error("connect should not run when registration.mode static is misconfigured");
+      },
+    });
+
+    try {
+      const promise = (harness.manager as unknown as {
+        createHttpTransport: (definition: ServerDefinition, serverName: string) => Promise<FakeHttpTransport>;
+      }).createHttpTransport({
+        url: "https://api.example.com/mcp",
+        auth: {
+          type: "oauth",
+          registration: { mode: "static" },
+        },
+      }, "demo-server");
+
+      await expect(promise).rejects.toThrow(
+        'OAuth registration.mode "static" for "demo-server" requires client.information.clientId or clientIdEnv.',
+      );
+      expect(harness.streamableTransports).toHaveLength(0);
+      expect(harness.sseTransports).toHaveLength(0);
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("enforces metadata-url and dynamic registration semantics on the SDK auth provider", async () => {
+    const harness = createTestManager({
+      connectHandler: async (transport) => {
+        expect(transport.authProvider).toBeTruthy();
+      },
+    });
+
+    try {
+      const metadataUrlDefinition: ServerDefinition = {
+        url: "https://api.example.com/mcp",
+        auth: {
+          type: "oauth",
+          registration: { mode: "metadata-url" },
+          client: {
+            metadataUrl: "https://client.example.com/pi.json",
+            information: {
+              clientId: "ignored-static-client",
+              clientSecret: "ignored-static-secret",
+            },
+          },
+        },
+      };
+
+      const metadataTransport = await (harness.manager as unknown as {
+        createHttpTransport: (definition: ServerDefinition, serverName: string) => Promise<FakeHttpTransport>;
+      }).createHttpTransport(metadataUrlDefinition, "metadata-server");
+
+      const metadataProvider = metadataTransport.authProvider as {
+        clientInformation: () => Promise<{ client_id?: string } | undefined>;
+        clientMetadataUrl?: string;
+        saveClientInformation?: unknown;
+      };
+
+      await expect(metadataProvider.clientInformation()).resolves.toBeUndefined();
+      expect(metadataProvider.clientMetadataUrl).toBe("https://client.example.com/pi.json");
+      expect(metadataProvider.saveClientInformation).toBeUndefined();
+
+      const dynamicDefinition: ServerDefinition = {
+        url: "https://api.example.com/mcp",
+        auth: {
+          type: "oauth",
+          registration: { mode: "dynamic" },
+          client: {
+            metadataUrl: "https://client.example.com/ignored.json",
+            information: {
+              clientId: "ignored-static-client",
+              clientSecret: "ignored-static-secret",
+            },
+          },
+        },
+      };
+
+      const dynamicTransport = await (harness.manager as unknown as {
+        createHttpTransport: (definition: ServerDefinition, serverName: string) => Promise<FakeHttpTransport>;
+      }).createHttpTransport(dynamicDefinition, "dynamic-server");
+
+      const dynamicProvider = dynamicTransport.authProvider as {
+        clientInformation: () => Promise<{ client_id?: string } | undefined>;
+        clientMetadataUrl?: string;
+        saveClientInformation?: unknown;
+      };
+
+      await expect(dynamicProvider.clientInformation()).resolves.toBeUndefined();
+      expect(dynamicProvider.clientMetadataUrl).toBeUndefined();
+      expect(typeof dynamicProvider.saveClientInformation).toBe("function");
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("applies configured OAuth resource indicators through the auth provider", async () => {
+    const harness = createTestManager({
+      connectHandler: async (transport) => {
+        expect(transport.authProvider).toBeTruthy();
+      },
+    });
+
+    try {
+      const definition: ServerDefinition = {
+        url: "https://api.example.com/mcp/v1",
+        auth: {
+          type: "oauth",
+          resource: "https://api.example.com/mcp",
+        },
+      };
+
+      const transport = await (harness.manager as unknown as {
+        createHttpTransport: (definition: ServerDefinition, serverName: string) => Promise<FakeHttpTransport>;
+      }).createHttpTransport(definition, "resource-server");
+
+      const provider = transport.authProvider as {
+        validateResourceURL?: (serverUrl: string | URL, resource?: string) => Promise<URL | undefined>;
+      };
+
+      await expect(provider.validateResourceURL?.("https://api.example.com/mcp/v1")).resolves.toEqual(
+        new URL("https://api.example.com/mcp"),
+      );
+      await expect(
+        provider.validateResourceURL?.("https://api.example.com/mcp/v1", "https://api.example.com/mcp"),
+      ).resolves.toEqual(new URL("https://api.example.com/mcp"));
+      await expect(
+        provider.validateResourceURL?.("https://api.example.com/mcp/v1", "https://api.example.com/other"),
+      ).rejects.toThrow("Configured OAuth resource https://api.example.com/mcp is not permitted");
+    } finally {
+      harness.cleanup();
+    }
+  });
 });

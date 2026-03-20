@@ -34,29 +34,31 @@ describe("auth-store", () => {
     return dir;
   }
 
-  it("creates stable fingerprints from normalized server/issuer/client identity instead of server name", () => {
+  it("creates stable fingerprints from normalized server/resource/registration identity instead of server name", () => {
     const shared = {
-      issuer: "https://auth.example.com/",
       grantType: "authorization_code" as const,
+      registrationMode: "metadata-url" as const,
       clientMetadataUrl: "https://client.example.com/pi.json#fragment",
     };
 
     const first = createAuthFingerprint({
       serverUrl: "https://api.example.com/mcp/?unused=1#ignored",
+      resource: "https://api.example.com/",
       ...shared,
     });
 
     const second = createAuthFingerprint({
       serverUrl: "https://api.example.com/mcp",
-      issuer: "https://auth.example.com",
+      resource: "https://api.example.com",
       grantType: "authorization_code",
+      registrationMode: "metadata-url",
       clientMetadataUrl: "https://client.example.com/pi.json",
     });
 
     const third = createAuthFingerprint({
       serverUrl: "https://api.example.com/mcp",
-      issuer: "https://auth.example.com",
       grantType: "authorization_code",
+      registrationMode: "dynamic",
       clientMetadata: {
         softwareVersion: "1.0.0",
         clientName: "Pi",
@@ -66,8 +68,8 @@ describe("auth-store", () => {
 
     const fourth = createAuthFingerprint({
       serverUrl: "https://api.example.com/mcp/",
-      issuer: "https://auth.example.com/",
       grantType: "authorization_code",
+      registrationMode: "dynamic",
       clientMetadata: {
         contacts: ["pi@example.com"],
         clientName: "Pi",
@@ -78,8 +80,8 @@ describe("auth-store", () => {
 
     const differentClient = createAuthFingerprint({
       serverUrl: "https://api.example.com/mcp",
-      issuer: "https://auth.example.com",
       grantType: "authorization_code",
+      registrationMode: "static",
       clientId: "different-client",
     });
 
@@ -91,7 +93,8 @@ describe("auth-store", () => {
       url: "https://api.example.com/mcp",
       auth: {
         type: "oauth",
-        issuer: "https://auth.example.com",
+        resource: "https://api.example.com",
+        registration: { mode: "metadata-url" },
         client: {
           metadataUrl: "https://client.example.com/pi.json",
         },
@@ -102,13 +105,15 @@ describe("auth-store", () => {
     expect(
       buildAuthFingerprintSeed({
         serverUrl: "https://api.example.com/mcp",
-        issuer: "https://auth.example.com",
+        resource: "https://api.example.com",
+        registrationMode: "metadata-url",
         clientMetadataUrl: "https://client.example.com/pi.json",
       }),
     ).toEqual({
       serverUrl: "https://api.example.com/mcp",
-      issuer: "https://auth.example.com/",
+      resource: "https://api.example.com/",
       grantType: "authorization_code",
+      registrationMode: "metadata-url",
       clientIdentity: "metadata_url:https://client.example.com/pi.json",
     });
   });
@@ -408,11 +413,19 @@ describe("auth-store", () => {
 
     store.saveTokens(fingerprint!, {
       access_token: "expired-access",
+      refresh_token: "refresh-after-expiry",
       token_type: "bearer",
       expiresAt: Date.now() - 1_000,
     });
 
     expect(getStoredTokens("legacy-server", definition, store)).toBeUndefined();
+    expect(
+      getStoredTokens("legacy-server", definition, store, { includeExpired: true }),
+    ).toMatchObject({
+      access_token: "expired-access",
+      refresh_token: "refresh-after-expiry",
+      token_type: "bearer",
+    });
   });
 
   it("migrates legacy tokens when the SDK provider store loads them for the first time", () => {

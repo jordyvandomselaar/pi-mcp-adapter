@@ -118,6 +118,21 @@ function buildAuthBehaviorFooterLines(): string[] {
   ];
 }
 
+function getStoredTokenAvailability(
+  serverName: string,
+  definition: ServerDefinition,
+): { hasUsableAccessToken: boolean; hasRefreshToken: boolean } {
+  const usableTokens = getStoredTokens(serverName, definition);
+  const storedTokens = getStoredTokens(serverName, definition, undefined, {
+    includeExpired: true,
+  });
+
+  return {
+    hasUsableAccessToken: usableTokens !== undefined,
+    hasRefreshToken: Boolean(storedTokens?.refresh_token),
+  };
+}
+
 function getAuthStatusSummary(
   state: McpExtensionState,
   serverName: string,
@@ -125,7 +140,7 @@ function getAuthStatusSummary(
 ): { summary: string; note?: string } {
   const requirement = getServerNeedsAuth(state, serverName);
   const connection = state.manager.getConnection(serverName);
-  const hasStoredTokens = getStoredTokens(serverName, definition) !== undefined;
+  const tokenAvailability = getStoredTokenAvailability(serverName, definition);
 
   if (connection?.status === "connected") {
     return { summary: "connected" };
@@ -142,15 +157,17 @@ function getAuthStatusSummary(
 
   if (usesInteractiveOAuth(definition)) {
     return {
-      summary: hasStoredTokens
+      summary: tokenAvailability.hasUsableAccessToken
         ? "stored tokens available"
-        : "browser sign-in required",
+        : tokenAvailability.hasRefreshToken
+          ? "stored refresh token available"
+          : "browser sign-in required",
     };
   }
 
   if (usesClientCredentialsOAuth(definition)) {
     return {
-      summary: hasStoredTokens
+      summary: tokenAvailability.hasUsableAccessToken
         ? "cached machine token available"
         : "ready for non-interactive token exchange",
     };
@@ -538,11 +555,11 @@ export async function openMcpPanel(
       const connection = state.manager.getConnection(serverName);
       if (connection?.status === "connected") return "connected";
       if (serverNeedsAuth(state, serverName)) return "needs-auth";
-      if (
-        usesInteractiveOAuth(definition) &&
-        getStoredTokens(serverName, definition) === undefined
-      ) {
-        return "needs-auth";
+      if (usesInteractiveOAuth(definition)) {
+        const tokenAvailability = getStoredTokenAvailability(serverName, definition);
+        if (!tokenAvailability.hasUsableAccessToken && !tokenAvailability.hasRefreshToken) {
+          return "needs-auth";
+        }
       }
       if (getFailureAgeSeconds(state, serverName) !== null) return "failed";
       return "idle";

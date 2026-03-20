@@ -123,6 +123,45 @@ describe("openMcpPanel auth-aware callbacks", () => {
     expect(createMcpPanel).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps authorization_code servers idle when only a refresh token remains", async () => {
+    getStoredTokens.mockImplementation((serverName: string, _definition: unknown, _store: unknown, options?: { includeExpired?: boolean }) => {
+      if (serverName !== "interactive") {
+        return undefined;
+      }
+
+      if (options?.includeExpired) {
+        return {
+          access_token: "expired-access",
+          refresh_token: "refresh-123",
+          token_type: "bearer",
+        };
+      }
+
+      return undefined;
+    });
+
+    createMcpPanel.mockImplementation((_config, _cache, _provenance, callbacks, _tui, onDone) => {
+      expect(callbacks.getConnectionStatus("interactive")).toBe("idle");
+      onDone({ cancelled: true, changes: new Map() });
+      return { close: vi.fn() };
+    });
+
+    const state = createBaseState();
+    state.config = {
+      mcpServers: {
+        interactive: {
+          url: "https://interactive.example.com/mcp",
+          auth: { type: "oauth" },
+        },
+      },
+    };
+
+    const { ctx, pi } = createUiHarness();
+    state.ui = ctx.ui;
+
+    await openMcpPanel(state, pi, ctx);
+  });
+
   it("intentionally retries reconnect from the panel and safely surfaces callback failures", async () => {
     const state = createBaseState();
     state.config = {

@@ -123,12 +123,12 @@ export default function mcpAdapter(pi: ExtensionAPI) {
           await showTools(state, ctx);
           break;
         case "auth":
-          if (!targetServer || targetServer === "status") {
+          if (!targetServer || (targetServer === "status" && !state.config.mcpServers.status)) {
             await showAuthOverview(state, ctx);
             break;
           }
 
-          if (targetServer === "help") {
+          if (targetServer === "help" && !state.config.mcpServers.help) {
             if (ctx.hasUI) {
               ctx.ui.notify(buildAuthCommandHelp("/mcp auth"), "info");
             }
@@ -167,12 +167,12 @@ export default function mcpAdapter(pi: ExtensionAPI) {
       }
 
       const value = args?.trim() ?? "";
-      if (!value || value === "status") {
+      if (!value || (value === "status" && !state.config.mcpServers.status)) {
         await showAuthOverview(state, ctx);
         return;
       }
 
-      if (value === "help") {
+      if (value === "help" && !state.config.mcpServers.help) {
         if (ctx.hasUI) {
           ctx.ui.notify(buildAuthCommandHelp("/mcp-auth"), "info");
         }

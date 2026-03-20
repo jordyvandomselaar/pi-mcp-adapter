@@ -24,9 +24,11 @@ import type {
 } from "./types.js";
 import {
   getBearerAuthConfig,
-  getOAuthAuthConfig,
+  getResolvedOAuthAuthConfig,
   getServerAuthType,
   serverStreamResultPatchNotificationSchema,
+  type OAuthRegistrationMode,
+  type ResolvedOAuthAuthConfig,
 } from "./types.js";
 import {
   createSdkAuthProvider,
@@ -300,17 +302,22 @@ export class McpServerManager {
     serverName: string,
     options: ServerConnectOptions,
   ): Promise<{ authProvider: PiOAuthClientProvider; authContext?: PendingAuthorizationContext }> {
-    const oauth = getOAuthAuthConfig(definition);
+    const oauth = getResolvedOAuthAuthConfig(definition);
     const fingerprint = createAuthFingerprintFromServer(definition);
 
     if (!definition.url || !oauth || !fingerprint) {
       throw new Error(`OAuth configuration for "${serverName}" is incomplete`);
     }
 
-    const flow = oauth.grantType ?? "authorization_code";
+    const flow = oauth.grantType;
     const store = this.authStore.createProviderStore(fingerprint, { serverName });
     const staticClientInformation = toOAuthClientInformation(oauth.client?.information);
     const clientMetadata = toOAuthClientMetadata(oauth.client?.metadata, oauth.scope);
+    const registration = resolveOAuthRegistrationRuntime(
+      oauth,
+      staticClientInformation,
+      serverName,
+    );
     const onEvent = (event: { type: string; detail?: unknown }) => {
       logger.debug(`OAuth provider event: ${event.type}`, {
         serverName,
@@ -319,21 +326,39 @@ export class McpServerManager {
       });
     };
 
+    const finalizeAuthProvider = (authProvider: PiOAuthClientProvider): PiOAuthClientProvider => {
+      if (!registration.allowDynamicClientRegistration) {
+        (authProvider as PiOAuthClientProvider & { saveClientInformation?: unknown }).saveClientInformation = undefined;
+      }
+
+      if (oauth.resource) {
+        (authProvider as PiOAuthClientProvider & {
+          validateResourceURL?: (serverUrl: string | URL, resource?: string) => Promise<URL | undefined>;
+        }).validateResourceURL = async (serverUrl, discoveredResource) => {
+          return resolveConfiguredResourceUrl(serverUrl, oauth.resource!, discoveredResource);
+        };
+      }
+
+      return authProvider;
+    };
+
     if (flow === "client_credentials") {
       return {
-        authProvider: createSdkAuthProvider({
-          flow,
-          serverUrl: definition.url,
-          serverName,
-          fingerprint,
-          store,
-          staticClientInformation,
-          clientMetadata,
-          clientMetadataUrl: oauth.client?.metadataUrl,
-          interactiveAllowed: options.interactiveAllowed,
-          interactionReason: options.interactionReason,
-          onEvent,
-        }),
+        authProvider: finalizeAuthProvider(
+          createSdkAuthProvider({
+            flow,
+            serverUrl: definition.url,
+            serverName,
+            fingerprint,
+            store,
+            staticClientInformation: registration.staticClientInformation,
+            clientMetadata,
+            clientMetadataUrl: registration.clientMetadataUrl,
+            interactiveAllowed: options.interactiveAllowed,
+            interactionReason: options.interactionReason,
+            onEvent,
+          }),
+        ),
       };
     }
 
@@ -365,25 +390,27 @@ export class McpServerManager {
       pendingSession = undefined;
     };
 
-    const authProvider = createSdkAuthProvider({
-      flow,
-      serverUrl: definition.url,
-      serverName,
-      fingerprint,
-      store,
-      staticClientInformation,
-      clientMetadata,
-      clientMetadataUrl: oauth.client?.metadataUrl,
-      redirectUrl: this.authSessionManager.redirectUrl,
-      getState: async () => (await ensureSession()).state,
-      redirectToAuthorization: async (authorizationUrl) => {
-        const session = await ensureSession();
-        await session.openAuthorization(authorizationUrl);
-      },
-      interactiveAllowed: options.interactiveAllowed,
-      interactionReason: options.interactionReason,
-      onEvent,
-    });
+    const authProvider = finalizeAuthProvider(
+      createSdkAuthProvider({
+        flow,
+        serverUrl: definition.url,
+        serverName,
+        fingerprint,
+        store,
+        staticClientInformation: registration.staticClientInformation,
+        clientMetadata,
+        clientMetadataUrl: registration.clientMetadataUrl,
+        redirectUrl: this.authSessionManager.redirectUrl,
+        getState: async () => (await ensureSession()).state,
+        redirectToAuthorization: async (authorizationUrl) => {
+          const session = await ensureSession();
+          await session.openAuthorization(authorizationUrl);
+        },
+        interactiveAllowed: options.interactiveAllowed,
+        interactionReason: options.interactionReason,
+        onEvent,
+      }),
+    );
 
     const authContext: PendingAuthorizationContext = {
       hasPendingAuthorization: () => pendingSession !== undefined,
@@ -631,6 +658,106 @@ function isAuthRelatedTransportError(error: unknown): boolean {
     || message.includes("insufficient_scope")
     || message.includes("interactive authorization")
   );
+}
+
+interface OAuthRegistrationRuntime {
+  staticClientInformation?: OAuthClientInformationMixed;
+  clientMetadataUrl?: string;
+  allowDynamicClientRegistration: boolean;
+}
+
+function resolveOAuthRegistrationRuntime(
+  auth: ResolvedOAuthAuthConfig,
+  staticClientInformation: OAuthClientInformationMixed | undefined,
+  serverName: string,
+): OAuthRegistrationRuntime {
+  switch (auth.registration.mode) {
+    case "static":
+      if (!staticClientInformation) {
+        throw new Error(
+          `OAuth registration.mode \"static\" for "${serverName}" requires client.information.clientId or clientIdEnv.`,
+        );
+      }
+
+      return {
+        staticClientInformation,
+        allowDynamicClientRegistration: false,
+      };
+    case "metadata-url":
+      if (!auth.client?.metadataUrl) {
+        throw new Error(
+          `OAuth registration.mode \"metadata-url\" for "${serverName}" requires client.metadataUrl.`,
+        );
+      }
+
+      return {
+        clientMetadataUrl: auth.client.metadataUrl,
+        allowDynamicClientRegistration: false,
+      };
+    case "dynamic":
+      return {
+        allowDynamicClientRegistration: true,
+      };
+    case "auto":
+    default:
+      return {
+        staticClientInformation,
+        clientMetadataUrl: auth.client?.metadataUrl,
+        allowDynamicClientRegistration: true,
+      };
+  }
+}
+
+function resolveConfiguredResourceUrl(
+  serverUrl: string | URL,
+  configuredResource: string | URL,
+  discoveredResource?: string,
+): URL {
+  const defaultResource = new URL(String(serverUrl));
+  defaultResource.hash = "";
+
+  const configured = new URL(String(configuredResource));
+  configured.hash = "";
+
+  if (!isResourceAllowed(defaultResource, configured)) {
+    throw new Error(
+      `Configured OAuth resource ${configured.toString()} is not compatible with MCP server ${defaultResource.toString()}.`,
+    );
+  }
+
+  if (discoveredResource) {
+    const discovered = new URL(discoveredResource);
+    discovered.hash = "";
+
+    if (!isResourceAllowed(configured, discovered)) {
+      throw new Error(
+        `Configured OAuth resource ${configured.toString()} is not permitted by protected resource metadata ${discovered.toString()}.`,
+      );
+    }
+  }
+
+  return configured;
+}
+
+function isResourceAllowed(requestedResource: string | URL, configuredResource: string | URL): boolean {
+  const requested = new URL(String(requestedResource));
+  const configured = new URL(String(configuredResource));
+
+  if (requested.origin !== configured.origin) {
+    return false;
+  }
+
+  if (requested.pathname.length < configured.pathname.length) {
+    return false;
+  }
+
+  const requestedPath = requested.pathname.endsWith("/")
+    ? requested.pathname
+    : `${requested.pathname}/`;
+  const configuredPath = configured.pathname.endsWith("/")
+    ? configured.pathname
+    : `${configured.pathname}/`;
+  return requestedPath.startsWith(configuredPath);
 }
 
 function toOAuthClientInformation(

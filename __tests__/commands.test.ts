@@ -203,6 +203,41 @@ describe("showAuthOverview", () => {
     expect(text).toContain("Use /mcp auth (or /mcp-auth) to show this summary again");
   });
 
+  it("surfaces refresh-token-only interactive auth state without forcing needs-auth", async () => {
+    const state = createBaseState();
+    state.config = {
+      mcpServers: {
+        interactive: {
+          url: "https://interactive.example.com/mcp",
+          auth: "oauth",
+        },
+      },
+    };
+
+    getStoredTokens.mockImplementation((serverName: string, _definition: unknown, _store: unknown, options?: { includeExpired?: boolean }) => {
+      if (serverName !== "interactive") {
+        return undefined;
+      }
+
+      if (options?.includeExpired) {
+        return {
+          access_token: "expired-token",
+          refresh_token: "refresh-token",
+          token_type: "bearer",
+        };
+      }
+
+      return undefined;
+    });
+
+    const { ctx, notify } = createUiHarness();
+    await showAuthOverview(state, ctx);
+
+    const text = notifiedText(notify);
+    expect(text).toContain("interactive: stored refresh token available");
+    expect(text).not.toContain("interactive: browser sign-in required");
+  });
+
   it("describes env-backed static client info in auth summaries", async () => {
     const state = createBaseState();
     state.config = {
