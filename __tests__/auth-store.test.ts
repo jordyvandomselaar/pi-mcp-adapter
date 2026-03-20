@@ -8,6 +8,7 @@ import {
   buildAuthFingerprintSeed,
   createAuthFingerprint,
   createAuthFingerprintFromServer,
+  getStoredTokens,
   redactAuthRecordForLogs,
 } from "../auth-store.js";
 import type { ServerEntry } from "../types.js";
@@ -274,6 +275,53 @@ describe("auth-store", () => {
     expect(skipped).toMatchObject({ access_token: "durable-access" });
     expect(store.getMigrationReceipt("conflict-server")?.status).toBe("skipped-existing");
     expect(store.loadTokens(conflictFingerprint)?.access_token).toBe("durable-access");
+  });
+
+  it("serves migrated legacy tokens through the durable lookup helper and ignores expired entries", () => {
+    const rootDir = makeTempDir();
+    const legacyRootDir = join(rootDir, "legacy");
+    const store = new FileAuthStore({ rootDir, legacyRootDir });
+    const definition: ServerEntry = {
+      url: "https://api.example.com/mcp",
+      auth: {
+        type: "oauth",
+        grantType: "authorization_code",
+      },
+    };
+
+    mkdirSync(join(legacyRootDir, "legacy-server"), { recursive: true });
+    writeFileSync(
+      join(legacyRootDir, "legacy-server", "tokens.json"),
+      JSON.stringify({
+        access_token: "legacy-access",
+        refresh_token: "legacy-refresh",
+        token_type: "bearer",
+      }),
+      "utf-8",
+    );
+
+    expect(getStoredTokens("legacy-server", definition, store)).toMatchObject({
+      access_token: "legacy-access",
+      refresh_token: "legacy-refresh",
+      token_type: "bearer",
+    });
+
+    const fingerprint = createAuthFingerprintFromServer(definition);
+    expect(fingerprint).toBeTruthy();
+    expect(store.getMigrationReceipt("legacy-server")?.status).toBe("imported");
+    expect(store.loadTokens(fingerprint!, { serverName: "legacy-server" })).toMatchObject({
+      access_token: "legacy-access",
+      refresh_token: "legacy-refresh",
+      token_type: "bearer",
+    });
+
+    store.saveTokens(fingerprint!, {
+      access_token: "expired-access",
+      token_type: "bearer",
+      expiresAt: Date.now() - 1_000,
+    });
+
+    expect(getStoredTokens("legacy-server", definition, store)).toBeUndefined();
   });
 
   it("redacts secrets for logs while keeping durable persistence intact", () => {

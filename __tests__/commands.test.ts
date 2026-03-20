@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { InvalidAuthCallbackError } from "../auth-session-manager.js";
 import { serverNeedsAuth, type McpExtensionState } from "../state.js";
 
 const {
@@ -39,7 +40,7 @@ vi.mock("../metadata-cache.js", async () => {
   };
 });
 
-vi.mock("../oauth-handler.js", () => ({
+vi.mock("../auth-store.js", () => ({
   getStoredTokens,
 }));
 
@@ -248,6 +249,42 @@ describe("authenticateServer", () => {
     expect(text).toContain("Starting browser-based authorization_code auth.");
     expect(text).toContain('Compatibility note: legacy auth: "oauth" config defaults to authorization_code with automatic registration.');
     expect(text).toContain("MCP: Reconnected to demo (1 tools, 0 resources)");
+  });
+
+  it("marks failed interactive reauth as needs-auth without leaking callback details", async () => {
+    const state = createBaseState();
+    state.config = {
+      mcpServers: {
+        demo: {
+          url: "https://api.example.com/mcp",
+          auth: { type: "oauth" },
+        },
+      },
+      settings: {
+        toolPrefix: "server",
+      },
+    };
+    state.failureTracker.set("demo", Date.now());
+
+    const manager = state.manager as unknown as {
+      connect: ReturnType<typeof vi.fn>;
+    };
+    manager.connect.mockRejectedValue(
+      new InvalidAuthCallbackError(
+        "OAuth callback returned error: access_denied code=secret-code&state=secret-state",
+      ),
+    );
+
+    const { ctx, notify } = createUiHarness();
+    await authenticateServer(state, "demo", ctx);
+
+    const text = notifiedText(notify);
+    expect(text).toContain('Browser sign-in callback for "demo" did not complete successfully');
+    expect(text).not.toContain("code=secret-code");
+    expect(text).not.toContain("state=secret-state");
+    expect(text).not.toContain("access_denied");
+    expect(serverNeedsAuth(state, "demo")).toBe(true);
+    expect(state.failureTracker.has("demo")).toBe(false);
   });
 
   it("keeps client_credentials auth non-interactive and explains failure semantics", async () => {

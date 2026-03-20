@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- OAuth auth now uses the SDK-backed durable auth store and browser flow instead of the legacy manual token-file helper.
+- `/mcp-auth` now acts as an auth status + launcher command, and legacy `auth: "oauth"` remains a compatibility shorthand for `authorization_code`.
+- Background keep-alive and reconnect checks avoid browser launches and leave servers in a needs-auth state when interactive reauth is required.
+
+### Fixed
+- Legacy tokens under `~/.pi/agent/mcp-oauth/<server>/tokens.json` are imported into the new durable auth store on first use when possible.
+- Removed stale packaging/docs references to the retired manual OAuth helper path.
+
 ## [2.2.0] - 2026-03-16
 
 ### Added
@@ -182,7 +191,7 @@ mcp({ tool: "my_tool", args: '{"key": "value"}' })
   - `/mcp` or `/mcp status` - Show server status
   - `/mcp tools` - List all tools
   - `/mcp reconnect` - Force reconnect all servers
-  - `/mcp-auth <server>` - Show OAuth setup instructions
+  - `/mcp-auth <server>` - Show legacy OAuth setup instructions
 
 ### Architecture
 

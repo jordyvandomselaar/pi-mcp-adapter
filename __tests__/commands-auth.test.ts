@@ -31,7 +31,7 @@ vi.mock("../metadata-cache.js", async () => {
   };
 });
 
-vi.mock("../oauth-handler.js", () => ({
+vi.mock("../auth-store.js", () => ({
   getStoredTokens,
 }));
 

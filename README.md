@@ -83,14 +83,84 @@ Two calls instead of 26 tools cluttering the context.
 | `args` | Command arguments |
 | `env` | Environment variables (`${VAR}` interpolation) |
 | `cwd` | Working directory |
-| `url` | HTTP endpoint (StreamableHTTP with SSE fallback) |
-| `auth` | `"bearer"` or `"oauth"` |
+| `url` | HTTP endpoint (StreamableHTTP with auth-aware SSE fallback) |
+| `auth` | `"bearer"`, `"oauth"`, or an auth object (`{ type: "oauth" | "bearer", ... }`) |
 | `bearerToken` / `bearerTokenEnv` | Token or env var name |
 | `lifecycle` | `"lazy"` (default), `"eager"`, or `"keep-alive"` |
 | `idleTimeout` | Minutes before idle disconnect (overrides global) |
 | `exposeResources` | Expose MCP resources as tools (default: true) |
 | `directTools` | `true`, `string[]`, or `false` — register tools individually instead of through proxy |
 | `debug` | Show server stderr (default: false) |
+
+### OAuth and HTTP Auth
+
+For static bearer tokens, keep using either `auth: "bearer"` or the object form:
+
+```json
+{
+  "mcpServers": {
+    "internal-api": {
+      "url": "https://api.example.com/mcp",
+      "auth": {
+        "type": "bearer",
+        "tokenEnv": "INTERNAL_API_TOKEN"
+      }
+    }
+  }
+}
+```
+
+For OAuth, use either the legacy shorthand `auth: "oauth"` or the richer object form. The shorthand remains a compatibility alias for browser-based `authorization_code` with automatic registration.
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "url": "https://mcp.example.com",
+      "auth": {
+        "type": "oauth",
+        "grantType": "authorization_code",
+        "scope": "read:org repo",
+        "client": {
+          "metadata": {
+            "clientName": "Pi MCP Adapter"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+`client_credentials` is also supported for non-interactive machine auth:
+
+```json
+{
+  "mcpServers": {
+    "service-account": {
+      "url": "https://mcp.example.com",
+      "auth": {
+        "type": "oauth",
+        "grantType": "client_credentials",
+        "registration": { "mode": "static" },
+        "client": {
+          "information": {
+            "clientId": "my-client-id",
+            "clientSecret": "my-client-secret"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Behavior notes:
+
+- `/mcp-auth` shows OAuth status, and `/mcp-auth <server>` starts or retries auth for a specific server.
+- Browser auth uses the system browser with a loopback callback on `127.0.0.1`.
+- Background health checks and keep-alive reconnects never open a browser. They only use cached tokens / silent refresh and mark the server as needing auth if user interaction is required.
+- Legacy tokens from `~/.pi/agent/mcp-oauth/<server>/tokens.json` are imported into the durable auth store on first use when possible.
 
 ### Lifecycle Modes
 
@@ -276,7 +346,8 @@ Tool names are fuzzy-matched on hyphens and underscores — `context7_resolve_li
 | `/mcp tools` | List all tools |
 | `/mcp reconnect` | Reconnect all servers |
 | `/mcp reconnect <server>` | Connect or reconnect a single server |
-| `/mcp-auth <server>` | OAuth setup |
+| `/mcp-auth` | Show OAuth status for configured servers |
+| `/mcp-auth <server>` | Start or retry auth for one OAuth-configured server |
 
 ## How It Works
 
@@ -291,6 +362,6 @@ Tool names are fuzzy-matched on hyphens and underscores — `context7_resolve_li
 
 ## Limitations
 
-- OAuth tokens obtained externally (no browser flow)
-- No automatic token refresh
 - Cross-session server sharing not yet implemented (each Pi session runs its own server processes)
+- OAuth auth is only available for HTTP/SSE transports, not stdio-only servers
+- Background reconnects intentionally avoid surprise browser launches; if silent refresh is not possible, the server stays in a needs-auth state until you retry interactively

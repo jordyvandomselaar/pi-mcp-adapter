@@ -397,6 +397,37 @@ export class FileInteractiveAuthSessionStore {
   }
 }
 
+const defaultAuthStore = new FileAuthStore();
+
+export function getStoredTokens(
+  serverName: string,
+  definition: ServerEntry,
+  authStore: FileAuthStore = defaultAuthStore,
+): OAuthTokens | undefined {
+  const fingerprint = createAuthFingerprintFromServer(definition);
+  if (!fingerprint) {
+    return undefined;
+  }
+
+  const stored = authStore.loadTokens(fingerprint, { serverName });
+  if (!stored) {
+    return undefined;
+  }
+
+  if (stored.expiresAt && Date.now() > stored.expiresAt) {
+    return undefined;
+  }
+
+  return {
+    access_token: stored.access_token,
+    token_type: stored.token_type ?? "bearer",
+    refresh_token: stored.refresh_token,
+    expires_in: stored.expires_in,
+    scope: stored.scope,
+    id_token: stored.id_token,
+  };
+}
+
 export function getDefaultAuthStoreRoot(): string {
   return AUTH_STORE_ROOT;
 }

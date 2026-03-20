@@ -24,7 +24,7 @@ import {
 import { getServerProvenance, writeDirectToolsConfig } from "./config.js";
 import { updateMetadataCache, updateStatusBar, getFailureAgeSeconds } from "./init.js";
 import { loadMetadataCache } from "./metadata-cache.js";
-import { getStoredTokens } from "./oauth-handler.js";
+import { getStoredTokens } from "./auth-store.js";
 import { buildToolMetadata } from "./tool-metadata.js";
 
 interface ManagedConnectOptions {

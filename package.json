@@ -62,7 +62,6 @@
     "ui-server.ts",
     "glimpse-ui.ts",
     "npx-resolver.ts",
-    "oauth-handler.ts",
     "mcp-panel.ts",
     "logger.ts",
     "errors.ts",

@@ -21,7 +21,6 @@ const FILES = [
   "lifecycle.ts",
   "metadata-cache.ts",
   "npx-resolver.ts",
-  "oauth-handler.ts",
   "package.json",
   "tsconfig.json",
   "README.md",
