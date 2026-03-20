@@ -191,12 +191,15 @@ describe("showAuthOverview", () => {
     const text = notifiedText(notify);
     expect(text).toContain("interactive: browser sign-in required");
     expect(text).toContain("flow: authorization_code");
-    expect(text).toContain("registration: auto");
+    expect(text).toContain("registration: auto (static client info -> metadata URL/CIMD -> dynamic registration)");
     expect(text).toContain("machine: cached machine token available");
     expect(text).toContain("flow: client_credentials");
     expect(text).toContain("registration: static");
     expect(text).toContain("client: static client information (machine-client)");
-    expect(text).toContain("/mcp-auth to show this summary again");
+    expect(text).toContain("authorization_code uses the system browser with a 127.0.0.1 loopback callback");
+    expect(text).toContain("Tokens, client registration, and callback session state are stored under ~/.pi/agent/mcp-auth");
+    expect(text).toContain("HTTP auth failures stay auth failures; StreamableHTTP only falls back to SSE when the transport is incompatible.");
+    expect(text).toContain("Use /mcp auth (or /mcp-auth) to show this summary again");
   });
 });
 
@@ -245,8 +248,11 @@ describe("authenticateServer", () => {
     const text = notifiedText(notify);
     expect(text).toContain('MCP auth for "demo":');
     expect(text).toContain("flow: authorization_code");
-    expect(text).toContain("registration: auto");
-    expect(text).toContain("Starting browser-based authorization_code auth.");
+    expect(text).toContain("registration: auto (static client info -> metadata URL/CIMD -> dynamic registration)");
+    expect(text).toContain("Starting browser-based authorization_code auth. Pi will use your system browser with a 127.0.0.1 loopback callback if fresh sign-in is required.");
+    expect(text).toContain("Tokens, client registration, and callback session state are stored under ~/.pi/agent/mcp-auth and silently refreshed when possible.");
+    expect(text).toContain("Background reconnects never open a browser; Pi only launches auth on an intentional retry.");
+    expect(text).toContain("HTTP auth failures stay auth failures; StreamableHTTP only falls back to SSE when the transport itself is incompatible.");
     expect(text).toContain('Compatibility note: legacy auth: "oauth" config defaults to authorization_code with automatic registration.');
     expect(text).toContain("MCP: Reconnected to demo (1 tools, 0 resources)");
   });

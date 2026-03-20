@@ -8,13 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- OAuth auth now uses the SDK-backed durable auth store and browser flow instead of the legacy manual token-file helper.
-- `/mcp-auth` now acts as an auth status + launcher command, and legacy `auth: "oauth"` remains a compatibility shorthand for `authorization_code`.
-- Background keep-alive and reconnect checks avoid browser launches and leave servers in a needs-auth state when interactive reauth is required.
+- OAuth auth now uses the SDK-backed browser flow for HTTP servers, with a `127.0.0.1` loopback callback, durable token/client/session storage in `~/.pi/agent/mcp-auth`, and silent refresh when possible.
+- `/mcp-auth` now acts as a compatibility auth status + launcher for `/mcp auth`, and legacy `auth: "oauth"` remains a compatibility shorthand for `authorization_code` with automatic registration defaults.
+- HTTP OAuth now supports both interactive `authorization_code` and non-interactive `client_credentials`, and `registration.mode: "auto"` prefers static client info, then client metadata URL/CIMD, then dynamic registration.
+- Background keep-alive and reconnect checks avoid browser launches, leave servers in a needs-auth state when interactive reauth is required, and no longer treat auth failures as StreamableHTTP -> SSE fallback signals.
 
 ### Fixed
-- Legacy tokens under `~/.pi/agent/mcp-oauth/<server>/tokens.json` are imported into the new durable auth store on first use when possible.
-- Removed stale packaging/docs references to the retired manual OAuth helper path.
+- Legacy tokens under `~/.pi/agent/mcp-oauth/<server>/tokens.json` are imported into the durable auth store on first use when possible.
+- Removed stale packaging/docs references to the retired manual OAuth helper path and legacy `/mcp-auth` token-file setup guidance.
 
 ## [2.2.0] - 2026-03-16
 
@@ -183,7 +184,7 @@ mcp({ tool: "my_tool", args: '{"key": "value"}' })
 - **HTTP transport** with automatic fallback (StreamableHTTP → SSE)
 - **Config imports** from Cursor, Claude Code, Claude Desktop, VS Code, Windsurf, Codex
 - **Resource tools** - MCP resources exposed as callable tools
-- **OAuth support** - Token file-based authentication
+- **OAuth support** - Token file-based authentication (legacy in 1.0.0; replaced by the SDK-based flow described in Unreleased)
 - **Bearer token auth** - Static or environment variable tokens
 - **Keep-alive connections** with automatic health checks and reconnection
 - **Schema on-demand** - Parameter schemas shown in `describe` mode and error responses
@@ -191,7 +192,7 @@ mcp({ tool: "my_tool", args: '{"key": "value"}' })
   - `/mcp` or `/mcp status` - Show server status
   - `/mcp tools` - List all tools
   - `/mcp reconnect` - Force reconnect all servers
-  - `/mcp-auth <server>` - Show legacy OAuth setup instructions
+  - `/mcp-auth <server>` - Show legacy OAuth setup instructions (legacy 1.0.0 behavior; current command starts or retries auth)
 
 ### Architecture
 

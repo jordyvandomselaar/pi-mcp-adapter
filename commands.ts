@@ -73,6 +73,30 @@ function describeOAuthClient(auth: ResolvedOAuthAuthConfig): string {
   return "SDK-managed registration defaults";
 }
 
+function describeRegistrationMode(auth: ResolvedOAuthAuthConfig): string {
+  switch (auth.registration.mode) {
+    case "auto":
+      return "auto (static client info -> metadata URL/CIMD -> dynamic registration)";
+    case "metadata-url":
+      return auth.client?.metadataUrl
+        ? `metadata-url (${auth.client.metadataUrl})`
+        : "metadata-url";
+    default:
+      return auth.registration.mode;
+  }
+}
+
+function buildAuthBehaviorFooterLines(): string[] {
+  return [
+    "Behavior:",
+    "  authorization_code uses the system browser with a 127.0.0.1 loopback callback, PKCE, and single-use state validation.",
+    "  Tokens, client registration, and callback session state are stored under ~/.pi/agent/mcp-auth and silently refreshed when possible.",
+    "  client_credentials stays non-interactive and reuses durable auth state when possible.",
+    "  Background reconnects never open a browser; Pi leaves the server in needs-auth until you retry interactively.",
+    "  HTTP auth failures stay auth failures; StreamableHTTP only falls back to SSE when the transport is incompatible.",
+  ];
+}
+
 function getAuthStatusSummary(
   state: McpExtensionState,
   serverName: string,
@@ -126,7 +150,7 @@ function buildAuthSummaryLines(
   const lines = [
     `${serverName}: ${status.summary}`,
     `  flow: ${auth.grantType}`,
-    `  registration: ${auth.registration.mode}`,
+    `  registration: ${describeRegistrationMode(auth)}`,
     `  client: ${describeOAuthClient(auth)}`,
   ];
 
@@ -152,25 +176,26 @@ export async function showAuthOverview(state: McpExtensionState, ctx: ExtensionC
   for (const [serverName, definition] of entries) {
     lines.push(...buildAuthSummaryLines(state, serverName, definition), "");
   }
-  lines.push("Use /mcp-auth to show this summary again, or /mcp-auth <server> to start or retry authentication for a specific server.");
+  lines.push(...buildAuthBehaviorFooterLines(), "");
+  lines.push("Use /mcp auth (or /mcp-auth) to show this summary again, or /mcp auth <server> to start or retry authentication for a specific server.");
 
   ctx.ui.notify(lines.join("\n"), "info");
 }
 
 function summarizeAuthSessionFailure(serverName: string, error: AuthSessionError): string {
   if (error instanceof AuthSessionCancelledError) {
-    return `MCP: Browser sign-in for "${serverName}" was cancelled. Press Ctrl+R or run /mcp-auth ${serverName} to try again.`;
+    return `MCP: Browser sign-in for "${serverName}" was cancelled. Press Ctrl+R or run /mcp auth ${serverName} (or /mcp-auth ${serverName}) to try again.`;
   }
 
   if (error instanceof AuthSessionExpiredError) {
-    return `MCP: Browser sign-in for "${serverName}" expired before completion. Press Ctrl+R or run /mcp-auth ${serverName} to try again.`;
+    return `MCP: Browser sign-in for "${serverName}" expired before completion. Press Ctrl+R or run /mcp auth ${serverName} (or /mcp-auth ${serverName}) to try again.`;
   }
 
   if (error instanceof InvalidAuthCallbackError) {
-    return `MCP: Browser sign-in callback for "${serverName}" did not complete successfully. Press Ctrl+R or run /mcp-auth ${serverName} to try again.`;
+    return `MCP: Browser sign-in callback for "${serverName}" did not complete successfully. Press Ctrl+R or run /mcp auth ${serverName} (or /mcp-auth ${serverName}) to try again.`;
   }
 
-  return `MCP: Browser sign-in for "${serverName}" did not complete. Press Ctrl+R or run /mcp-auth ${serverName} to try again.`;
+  return `MCP: Browser sign-in for "${serverName}" did not complete. Press Ctrl+R or run /mcp auth ${serverName} (or /mcp-auth ${serverName}) to try again.`;
 }
 
 async function reconnectServerWithUserIntent(
@@ -371,8 +396,11 @@ export async function authenticateServer(
     ...buildAuthSummaryLines(state, serverName, definition),
     "",
     usesInteractiveOAuth(definition)
-      ? "Starting browser-based authorization_code auth. Pi will open your system browser only if fresh sign-in is required."
+      ? "Starting browser-based authorization_code auth. Pi will use your system browser with a 127.0.0.1 loopback callback if fresh sign-in is required."
       : "Starting non-interactive client_credentials auth. No browser will open; Pi will request a token with the configured client credentials.",
+    "Tokens, client registration, and callback session state are stored under ~/.pi/agent/mcp-auth and silently refreshed when possible.",
+    "Background reconnects never open a browser; Pi only launches auth on an intentional retry.",
+    "HTTP auth failures stay auth failures; StreamableHTTP only falls back to SSE when the transport itself is incompatible.",
   ];
 
   if (definition.auth === "oauth") {

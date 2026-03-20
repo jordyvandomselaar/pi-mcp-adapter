@@ -13,14 +13,35 @@ const EXT_PATH = "~/.pi/agent/extensions/pi-mcp-adapter/index.ts";
 
 const FILES = [
   "index.ts",
+  "state.ts",
+  "utils.ts",
+  "tool-metadata.ts",
+  "init.ts",
+  "ui-session.ts",
+  "proxy-modes.ts",
+  "direct-tools.ts",
+  "commands.ts",
   "types.ts",
+  "ui-stream-types.ts",
   "config.ts",
+  "auth-provider.ts",
+  "auth-session-manager.ts",
+  "auth-store.ts",
   "server-manager.ts",
   "tool-registrar.ts",
   "resource-tools.ts",
   "lifecycle.ts",
   "metadata-cache.ts",
+  "host-html-template.ts",
+  "ui-resource-handler.ts",
+  "consent-manager.ts",
+  "ui-server.ts",
+  "glimpse-ui.ts",
   "npx-resolver.ts",
+  "mcp-panel.ts",
+  "logger.ts",
+  "errors.ts",
+  "app-bridge.bundle.js",
   "package.json",
   "tsconfig.json",
   "README.md",
@@ -99,6 +120,7 @@ async function main() {
   console.log("\nInstallation complete!");
   console.log("\nCreate ~/.pi/agent/mcp.json to configure MCP servers.");
   console.log("Restart pi to load the extension.");
+  console.log("Use /mcp for the interactive panel, /mcp auth <server> to start or retry OAuth for HTTP MCP servers, or /mcp-auth <server> as a compatibility alias.");
 }
 
 main().catch((err) => {
