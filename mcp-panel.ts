@@ -352,7 +352,7 @@ class McpPanel {
       const server = this.servers[item.serverIndex];
       if (item.type === "server") {
         if (server.connectionStatus === "needs-auth") {
-          this.authNotice = `OAuth required — run /mcp-auth ${server.name} after closing this panel`;
+          this.authNotice = `OAuth required — press Ctrl+R to reconnect and continue the browser flow for ${server.name}`;
           return;
         }
         server.expanded = !server.expanded;

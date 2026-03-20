@@ -1,5 +1,11 @@
 import type { AgentToolResult, ToolInfo } from "@mariozechner/pi-coding-agent";
-import type { McpExtensionState } from "./state.js";
+import {
+  clearServerNeedsAuth,
+  isNeedsAuthError,
+  markServerNeedsAuth,
+  serverNeedsAuth,
+  type McpExtensionState,
+} from "./state.js";
 import type { ToolMetadata, McpContent } from "./types.js";
 import { getServerPrefix, parseUiPromptHandoff } from "./types.js";
 import { lazyConnect, updateServerMetadata, updateMetadataCache, getFailureAgeSeconds, updateStatusBar } from "./init.js";
@@ -99,6 +105,8 @@ export function executeStatus(state: McpExtensionState): ProxyToolResult {
     let status = "not connected";
     if (connection?.status === "connected") {
       status = "connected";
+    } else if (serverNeedsAuth(state, name)) {
+      status = "needs-auth";
     } else if (failedAgo !== null) {
       status = "failed";
     } else if (metadata !== undefined) {
@@ -119,6 +127,10 @@ export function executeStatus(state: McpExtensionState): ProxyToolResult {
     }
     if (server.status === "cached") {
       text += `○ ${server.name} (${server.toolCount} tools, cached)\n`;
+      continue;
+    }
+    if (server.status === "needs-auth") {
+      text += `! ${server.name} (needs authentication)\n`;
       continue;
     }
     if (server.status === "failed") {
@@ -370,18 +382,32 @@ export async function executeConnect(state: McpExtensionState, serverName: strin
     if (state.ui) {
       state.ui.setStatus("mcp", `MCP: connecting to ${serverName}...`);
     }
-    const connection = await state.manager.connect(serverName, definition);
+    const connection = await state.manager.connect(serverName, definition, {
+      interactiveAllowed: true,
+      interactionReason: "user",
+    });
     const prefix = state.config.settings?.toolPrefix ?? "server";
     const { metadata } = buildToolMetadata(connection.tools, connection.resources, definition, serverName, prefix);
     state.toolMetadata.set(serverName, metadata);
+    clearServerNeedsAuth(state, serverName);
     updateMetadataCache(state, serverName);
     state.failureTracker.delete(serverName);
     updateStatusBar(state);
     return executeList(state, serverName);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isNeedsAuthError(error)) {
+      state.failureTracker.delete(serverName);
+      markServerNeedsAuth(state, serverName, { error, reason: "user", message });
+      updateStatusBar(state);
+      return {
+        content: [{ type: "text" as const, text: `Server "${serverName}" needs authentication. Complete the browser flow and retry.` }],
+        details: { mode: "connect", error: "needs_auth", server: serverName, message },
+      };
+    }
+
     state.failureTracker.set(serverName, Date.now());
     updateStatusBar(state);
-    const message = error instanceof Error ? error.message : String(error);
     return {
       content: [{ type: "text" as const, text: `Failed to connect to "${serverName}": ${message}` }],
       details: { mode: "connect", error: "connect_failed", server: serverName, message },
@@ -493,7 +519,11 @@ export async function executeCall(
       if (state.ui) {
         state.ui.setStatus("mcp", `MCP: connecting to ${serverName}...`);
       }
-      connection = await state.manager.connect(serverName, definition);
+      connection = await state.manager.connect(serverName, definition, {
+        interactiveAllowed: true,
+        interactionReason: "user",
+      });
+      clearServerNeedsAuth(state, serverName);
       state.failureTracker.delete(serverName);
       updateServerMetadata(state, serverName);
       updateMetadataCache(state, serverName);
@@ -510,9 +540,19 @@ export async function executeCall(
         };
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isNeedsAuthError(error)) {
+        state.failureTracker.delete(serverName);
+        markServerNeedsAuth(state, serverName, { error, reason: "user", message });
+        updateStatusBar(state);
+        return {
+          content: [{ type: "text" as const, text: `Server "${serverName}" needs authentication. Complete the browser flow and retry.` }],
+          details: { mode: "call", error: "needs_auth", server: serverName, message },
+        };
+      }
+
       state.failureTracker.set(serverName, Date.now());
       updateStatusBar(state);
-      const message = error instanceof Error ? error.message : String(error);
       return {
         content: [{ type: "text" as const, text: `Failed to connect to "${serverName}": ${message}` }],
         details: { mode: "call", error: "connect_failed", message },

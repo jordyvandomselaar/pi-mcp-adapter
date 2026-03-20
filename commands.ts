@@ -1,12 +1,41 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { McpExtensionState } from "./state.js";
-import type { McpConfig, ServerEntry, McpPanelCallbacks, McpPanelResult } from "./types.js";
+import type { AuthInteractionReason } from "./auth-provider.js";
+import {
+  clearServerNeedsAuth,
+  isNeedsAuthError,
+  markServerNeedsAuth,
+  serverNeedsAuth,
+  type McpExtensionState,
+} from "./state.js";
+import type { McpConfig, ServerEntry, McpPanelCallbacks, McpPanelResult, ServerDefinition } from "./types.js";
 import { getServerAuthType } from "./types.js";
 import { getServerProvenance, writeDirectToolsConfig } from "./config.js";
 import { lazyConnect, updateMetadataCache, updateStatusBar, getFailureAgeSeconds } from "./init.js";
 import { loadMetadataCache } from "./metadata-cache.js";
 import { getStoredTokens } from "./oauth-handler.js";
 import { buildToolMetadata } from "./tool-metadata.js";
+
+interface ManagedConnectOptions {
+  interactiveAllowed?: boolean;
+  interactionReason?: AuthInteractionReason;
+}
+
+function connectWithPolicy(
+  state: McpExtensionState,
+  serverName: string,
+  definition: ServerDefinition,
+  options?: ManagedConnectOptions,
+): Promise<Awaited<ReturnType<McpExtensionState["manager"]["connect"]>>> {
+  const managed = state.manager as unknown as {
+    connect: (
+      name: string,
+      serverDefinition: ServerDefinition,
+      connectOptions?: ManagedConnectOptions,
+    ) => Promise<Awaited<ReturnType<McpExtensionState["manager"]["connect"]>>>;
+  };
+
+  return managed.connect(serverName, definition, options);
+}
 
 export async function showStatus(state: McpExtensionState, ctx: ExtensionContext): Promise<void> {
   if (!ctx.hasUI) return;
@@ -25,6 +54,9 @@ export async function showStatus(state: McpExtensionState, ctx: ExtensionContext
     if (connection?.status === "connected") {
       status = "connected";
       statusIcon = "✓";
+    } else if (serverNeedsAuth(state, name)) {
+      status = "needs auth";
+      statusIcon = "!";
     } else if (failedAgo !== null) {
       status = `failed ${failedAgo}s ago`;
       statusIcon = "✗";
@@ -85,9 +117,13 @@ export async function reconnectServers(
     try {
       await state.manager.close(name);
 
-      const connection = await state.manager.connect(name, definition);
+      const connection = await connectWithPolicy(state, name, definition, {
+        interactiveAllowed: true,
+        interactionReason: "user",
+      });
       const prefix = state.config.settings?.toolPrefix ?? "server";
 
+      clearServerNeedsAuth(state, name);
       const { metadata, failedTools } = buildToolMetadata(connection.tools, connection.resources, definition, name, prefix);
       state.toolMetadata.set(name, metadata);
       updateMetadataCache(state, name);
@@ -104,6 +140,15 @@ export async function reconnectServers(
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (isNeedsAuthError(error)) {
+        state.failureTracker.delete(name);
+        markServerNeedsAuth(state, name, { error, reason: "user", message });
+        if (ctx.hasUI) {
+          ctx.ui.notify(`MCP: ${name} needs authentication before it can reconnect`, "warning");
+        }
+        continue;
+      }
+
       state.failureTracker.set(name, Date.now());
       if (ctx.hasUI) {
         ctx.ui.notify(`MCP: Failed to reconnect to ${name}: ${message}`, "error");
@@ -179,11 +224,12 @@ export async function openMcpPanel(
     },
     getConnectionStatus: (serverName: string) => {
       const definition = config.mcpServers[serverName];
+      const connection = state.manager.getConnection(serverName);
+      if (connection?.status === "connected") return "connected";
+      if (serverNeedsAuth(state, serverName)) return "needs-auth";
       if (definition && getServerAuthType(definition) === "oauth" && getStoredTokens(serverName, definition) === undefined) {
         return "needs-auth";
       }
-      const connection = state.manager.getConnection(serverName);
-      if (connection?.status === "connected") return "connected";
       if (getFailureAgeSeconds(state, serverName) !== null) return "failed";
       return "idle";
     },
