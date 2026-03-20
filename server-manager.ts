@@ -30,7 +30,9 @@ import {
 } from "./types.js";
 import {
   createSdkAuthProvider,
+  InteractiveAuthorizationRequiredError,
   isInteractiveAuthorizationRequiredError,
+  resolveAuthPolicyDecision,
   type AuthInteractionReason,
   type PiOAuthClientProvider,
 } from "./auth-provider.js";
@@ -333,6 +335,23 @@ export class McpServerManager {
           onEvent,
         }),
       };
+    }
+
+    const storedTokens = await store.loadTokens();
+    if (!storedTokens && options.interactiveAllowed === false) {
+      const decision = resolveAuthPolicyDecision({
+        flow,
+        interactiveAllowed: options.interactiveAllowed,
+        interactionReason: options.interactionReason,
+        hasRefreshToken: false,
+      });
+
+      throw new InteractiveAuthorizationRequiredError({
+        decision,
+        serverUrl: definition.url,
+        serverName,
+        fingerprint,
+      });
     }
 
     await this.authSessionManager.start();

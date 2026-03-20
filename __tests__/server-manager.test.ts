@@ -6,7 +6,7 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js";
 import { StreamableHTTPError } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InteractiveAuthorizationRequiredError } from "../auth-provider.js";
-import { FileAuthStore } from "../auth-store.js";
+import { FileAuthStore, createAuthFingerprintFromServer } from "../auth-store.js";
 import { McpServerManager, type ServerConnectOptions } from "../server-manager.js";
 import type { ServerDefinition } from "../types.js";
 
@@ -124,6 +124,7 @@ function createTestManager(options: {
 
   return {
     manager,
+    authStore,
     sessionManager,
     streamableTransports,
     sseTransports,
@@ -177,20 +178,14 @@ describe("McpServerManager HTTP transport selection", () => {
     }
   });
 
-  it("does not fall back to SSE when background reconnects require interactive reauth", async () => {
+  it("short-circuits background OAuth reconnects without stored tokens before any browser-capable transport is created", async () => {
     const harness = createTestManager({
       connectOptions: {
         interactiveAllowed: false,
         interactionReason: "background",
       },
-      connectHandler: async (transport) => {
-        const provider = transport.authProvider as {
-          state?: () => Promise<string>;
-          redirectToAuthorization: (authorizationUrl: URL) => Promise<void>;
-        };
-
-        await provider.state?.();
-        await provider.redirectToAuthorization(new URL("https://auth.example.com/authorize"));
+      connectHandler: async () => {
+        throw new Error("connect should not run when background auth is already known to require user interaction");
       },
     });
 
@@ -210,6 +205,45 @@ describe("McpServerManager HTTP transport selection", () => {
           interactiveAllowed: false,
         }),
       });
+      expect(harness.sessionManager.start).not.toHaveBeenCalled();
+      expect(harness.sessionManager.startAttempt).not.toHaveBeenCalled();
+      expect(harness.streamableTransports).toHaveLength(0);
+      expect(harness.sseTransports).toHaveLength(0);
+    } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("still attempts silent background connects when durable tokens already exist", async () => {
+    const harness = createTestManager({
+      connectOptions: {
+        interactiveAllowed: false,
+        interactionReason: "background",
+      },
+      connectHandler: async (transport) => {
+        expect(transport.authProvider).toBeTruthy();
+      },
+    });
+
+    try {
+      const definition = createOAuthDefinition();
+      const fingerprint = createAuthFingerprintFromServer(definition);
+      expect(fingerprint).toBeTruthy();
+      harness.authStore.saveTokens(fingerprint!, {
+        access_token: "access-token-123",
+        token_type: "bearer",
+      });
+
+      const transport = await (harness.manager as unknown as {
+        createHttpTransport: (
+          definition: ServerDefinition,
+          serverName: string,
+          connectOptions: ServerConnectOptions,
+        ) => Promise<FakeHttpTransport>;
+      }).createHttpTransport(definition, "demo-server", harness.connectOptions ?? {});
+
+      expect(transport.kind).toBe("streamable");
+      expect(harness.streamableTransports.length).toBeGreaterThan(0);
       expect(harness.sseTransports).toHaveLength(0);
     } finally {
       harness.cleanup();
