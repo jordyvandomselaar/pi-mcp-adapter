@@ -255,7 +255,7 @@ class McpPanel {
     }
 
     if (usesInteractiveOAuth(server.definition)) {
-      return `Connecting to ${server.name} — complete any browser sign-in prompts, then return here.`;
+      return `Connecting to ${server.name} — Pi may open your system browser for loopback sign-in.`;
     }
 
     return `Connecting to ${server.name}...`;
@@ -263,10 +263,10 @@ class McpPanel {
 
   private getNeedsAuthNotice(server: ServerState): string {
     if (usesClientCredentialsOAuth(server.definition)) {
-      return `Authentication required — press Ctrl+R to retry the non-interactive client_credentials token exchange for ${server.name}.`;
+      return "Auth required — Ctrl+R retries non-interactive client_credentials. No browser will open.";
     }
 
-    return `Authentication required — press Ctrl+R to start or retry browser sign-in for ${server.name}.`;
+    return "Auth required — Ctrl+R starts browser sign-in. Background reconnects stay no-browser.";
   }
 
   private getAuthModeLabel(server: ServerState): string | null {
@@ -559,13 +559,13 @@ class McpPanel {
     if (server.connectionStatus === "needs-auth") {
       return usesClientCredentialsOAuth(server.definition)
         ? `Authentication is still required for ${server.name}. Check the configured client credentials or token endpoint settings, then press Ctrl+R to retry.`
-        : `Authentication is still required for ${server.name}. If the browser flow was cancelled, expired, or rejected, press Ctrl+R to try again.`;
+        : "Still needs auth — if browser sign-in or the loopback callback failed, press Ctrl+R again.";
     }
 
     if (server.connectionStatus === "failed" || !connected) {
       return usesClientCredentialsOAuth(server.definition)
         ? `Reconnect failed for ${server.name}. Check the configured client credentials or token endpoint settings, then press Ctrl+R to retry.`
-        : `Reconnect failed for ${server.name}. Check the browser flow or logs, then press Ctrl+R to retry.`;
+        : "Reconnect failed — check the browser flow, loopback callback, or logs, then press Ctrl+R.";
     }
 
     return `Reconnect did not complete for ${server.name}. Press Ctrl+R to retry.`;

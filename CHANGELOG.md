@@ -8,14 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
-- OAuth auth now uses the SDK-backed browser flow for HTTP servers, with a `127.0.0.1` loopback callback, durable token/client/session storage in `~/.pi/agent/mcp-auth`, and silent refresh when possible.
-- `/mcp-auth` now acts as a compatibility auth status + launcher for `/mcp auth`, and legacy `auth: "oauth"` remains a compatibility shorthand for `authorization_code` with automatic registration defaults.
+- OAuth auth now uses the SDK-backed HTTP flow for HTTP servers: `authorization_code` reuses stored credentials and silent refresh first, then opens the system browser and completes through a `127.0.0.1` loopback callback when user sign-in is still required.
+- Tokens, client registration, and callback session state now live in the durable store at `~/.pi/agent/mcp-auth`, so auth state survives restarts and can be reused without rerunning setup every session.
+- `/mcp auth`, `/mcp-auth`, `/mcp` panel notices, README guidance, and installer help now describe browser-vs-machine auth, loopback callback handling, no-surprise-browser background policy, and the preferred `/mcp auth` UX.
 - HTTP OAuth now supports both interactive `authorization_code` and non-interactive `client_credentials`, and `registration.mode: "auto"` prefers static client info, then client metadata URL/CIMD, then dynamic registration.
-- Background keep-alive and reconnect checks avoid browser launches, leave servers in a needs-auth state when interactive reauth is required, and no longer treat auth failures as StreamableHTTP -> SSE fallback signals.
+- Background keep-alive and reconnect checks avoid browser launches, leave servers in a needs-auth state when interactive reauth is required, and treat `401`/`403`, refresh failures, and rejected browser auth as auth failures instead of StreamableHTTP -> SSE fallback signals.
 
 ### Fixed
 - Legacy tokens under `~/.pi/agent/mcp-oauth/<server>/tokens.json` are imported into the durable auth store on first use when possible.
-- Removed stale packaging/docs references to the retired manual OAuth helper path and legacy `/mcp-auth` token-file setup guidance.
+- Removed stale docs/help references to the retired manual OAuth helper path, copy-paste token setup, and legacy `/mcp-auth` token-file instructions.
 
 ## [2.2.0] - 2026-03-16
 

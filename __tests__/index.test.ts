@@ -139,7 +139,11 @@ describe("mcp command auth routing", () => {
 
     await mcp?.handler("auth help", ctx);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
-      expect.stringContaining("/mcp auth <server>  Start or retry auth/token exchange for one OAuth-configured server"),
+      expect.stringContaining("/mcp auth <server>  Start or retry auth/token exchange for one OAuth-configured HTTP server"),
+      "info",
+    );
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("The browser flow completes through a 127.0.0.1 loopback callback"),
       "info",
     );
 
@@ -182,7 +186,11 @@ describe("mcp-auth command registration", () => {
 
     await mcpAuth?.handler("help", ctx);
     expect(ctx.ui.notify).toHaveBeenCalledWith(
-      expect.stringContaining("/mcp-auth <server>  Start or retry auth for one OAuth-configured server"),
+      expect.stringContaining("/mcp-auth <server>  Start or retry auth/token exchange for one OAuth-configured HTTP server"),
+      "info",
+    );
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("Prefer /mcp auth for new usage; /mcp-auth remains a compatibility alias."),
       "info",
     );
 

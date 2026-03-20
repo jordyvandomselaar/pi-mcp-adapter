@@ -120,7 +120,7 @@ async function main() {
   console.log("\nInstallation complete!");
   console.log("\nCreate ~/.pi/agent/mcp.json to configure MCP servers.");
   console.log("Restart pi to load the extension.");
-  console.log("Use /mcp for the interactive panel, /mcp auth <server> to start or retry OAuth for HTTP MCP servers, or /mcp-auth <server> as a compatibility alias.");
+  console.log("Use /mcp for the interactive panel. /mcp auth <server> intentionally starts or retries SDK-backed auth for HTTP MCP servers: system-browser authorization_code with a 127.0.0.1 callback when needed, or non-interactive client_credentials token exchange. /mcp-auth <server> remains a compatibility alias.");
 }
 
 main().catch((err) => {

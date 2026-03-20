@@ -9,6 +9,23 @@ import { loadMetadataCache } from "./metadata-cache.js";
 import { executeCall, executeConnect, executeDescribe, executeList, executeSearch, executeStatus, executeUiMessages } from "./proxy-modes.js";
 import { getConfigPathFromArgv } from "./utils.js";
 
+function buildAuthCommandHelp(commandPrefix: "/mcp auth" | "/mcp-auth"): string {
+  return [
+    "Usage:",
+    `  ${commandPrefix}           Show auth status, flow, registration strategy, and storage hints for configured MCP servers`,
+    `  ${commandPrefix} status    Show the same auth status summary`,
+    `  ${commandPrefix} <server>  Start or retry auth/token exchange for one OAuth-configured HTTP server`,
+    "",
+    "Notes:",
+    "  authorization_code reuses stored tokens and silent refresh first, then opens your system browser if sign-in is still required.",
+    "  The browser flow completes through a 127.0.0.1 loopback callback and Pi stores tokens, client registration, and callback state under ~/.pi/agent/mcp-auth.",
+    "  client_credentials stays non-interactive. Background reconnects never open a browser.",
+    commandPrefix === "/mcp-auth"
+      ? "  Prefer /mcp auth for new usage; /mcp-auth remains a compatibility alias."
+      : "  /mcp-auth remains a compatibility alias for the same flow.",
+  ].join("\n");
+}
+
 export default function mcpAdapter(pi: ExtensionAPI) {
   let state: McpExtensionState | null = null;
   let initPromise: Promise<McpExtensionState> | null = null;
@@ -113,15 +130,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 
           if (targetServer === "help") {
             if (ctx.hasUI) {
-              ctx.ui.notify(
-                "Usage:\n" +
-                "  /mcp auth           Show auth status for configured MCP servers\n" +
-                "  /mcp auth status    Show the same auth status summary\n" +
-                "  /mcp auth <server>  Start or retry auth/token exchange for one OAuth-configured server\n" +
-                "\n" +
-                "authorization_code servers may open your browser if user sign-in is required. client_credentials servers stay non-interactive.",
-                "info",
-              );
+              ctx.ui.notify(buildAuthCommandHelp("/mcp auth"), "info");
             }
             break;
           }
@@ -165,13 +174,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
 
       if (value === "help") {
         if (ctx.hasUI) {
-          ctx.ui.notify(
-            "Usage:\n" +
-            "  /mcp-auth           Show OAuth auth status for configured MCP servers\n" +
-            "  /mcp-auth status    Show the same auth status summary\n" +
-            "  /mcp-auth <server>  Start or retry auth for one OAuth-configured server",
-            "info",
-          );
+          ctx.ui.notify(buildAuthCommandHelp("/mcp-auth"), "info");
         }
         return;
       }

@@ -69,9 +69,17 @@ interface IntentionalReconnectResult {
 }
 
 function describeOAuthClient(auth: ResolvedOAuthAuthConfig): string {
-  const clientId = auth.client?.information?.clientId;
-  if (clientId) {
-    return `static client information (${clientId})`;
+  const information = auth.client?.information;
+  if (information) {
+    if (information.clientId) {
+      return `static client information (${information.clientId})`;
+    }
+
+    if (information.clientIdEnv) {
+      return `static client information (clientId from $${information.clientIdEnv})`;
+    }
+
+    return "static client information (credentials configured)";
   }
 
   if (auth.client?.metadataUrl) {
@@ -101,10 +109,11 @@ function describeRegistrationMode(auth: ResolvedOAuthAuthConfig): string {
 function buildAuthBehaviorFooterLines(): string[] {
   return [
     "Behavior:",
-    "  authorization_code uses the system browser with a 127.0.0.1 loopback callback, PKCE, and single-use state validation.",
-    "  Tokens, client registration, and callback session state are stored under ~/.pi/agent/mcp-auth and silently refreshed when possible.",
-    "  client_credentials stays non-interactive and reuses durable auth state when possible.",
-    "  Background reconnects never open a browser; Pi leaves the server in needs-auth until you retry interactively.",
+    "  authorization_code reuses stored tokens and silent refresh first, then uses the system browser with a 127.0.0.1 loopback callback, PKCE, and single-use state validation if sign-in is still required.",
+    "  Pi stores tokens, client registration, and callback session state under ~/.pi/agent/mcp-auth.",
+    "  registration.mode=auto prefers static client info, then metadata URL/CIMD, then dynamic registration.",
+    "  client_credentials stays non-interactive and can reuse durable auth state without opening a browser.",
+    "  Background reconnects and keep-alive health checks never open a browser; Pi leaves the server in needs-auth until you retry intentionally.",
     "  HTTP auth failures stay auth failures; StreamableHTTP only falls back to SSE when the transport is incompatible.",
   ];
 }
@@ -215,7 +224,7 @@ function summarizeAuthSessionFailure(
   }
 
   if (error instanceof InvalidAuthCallbackError) {
-    return `MCP: Browser sign-in callback for "${serverName}" did not complete successfully. Press Ctrl+R or run /mcp auth ${serverName} (or /mcp-auth ${serverName}) to try again.`;
+    return `MCP: Browser sign-in callback for "${serverName}" did not complete successfully. Confirm the auth server allows the 127.0.0.1 callback, then press Ctrl+R or run /mcp auth ${serverName} (or /mcp-auth ${serverName}) to try again.`;
   }
 
   return `MCP: Browser sign-in for "${serverName}" did not complete. Press Ctrl+R or run /mcp auth ${serverName} (or /mcp-auth ${serverName}) to try again.`;
@@ -444,9 +453,9 @@ export async function authenticateServer(
     ...buildAuthSummaryLines(state, serverName, definition),
     "",
     usesInteractiveOAuth(definition)
-      ? "Starting browser-based authorization_code auth. Pi will use your system browser with a 127.0.0.1 loopback callback if fresh sign-in is required."
-      : "Starting non-interactive client_credentials auth. No browser will open; Pi will request a token with the configured client credentials.",
-    "Tokens, client registration, and callback session state are stored under ~/.pi/agent/mcp-auth and silently refreshed when possible.",
+      ? "Starting browser-based authorization_code auth. Pi reuses stored tokens and silent refresh first; if sign-in is still required, it opens your system browser and waits for the 127.0.0.1 loopback callback."
+      : "Starting non-interactive client_credentials auth. No browser will open; Pi will request a token with the configured client credentials and reuse durable auth state when possible.",
+    "Pi stores tokens, client registration, and callback session state under ~/.pi/agent/mcp-auth.",
     "Background reconnects never open a browser; Pi only launches auth on an intentional retry.",
     "HTTP auth failures stay auth failures; StreamableHTTP only falls back to SSE when the transport itself is incompatible.",
   ];

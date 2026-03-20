@@ -196,10 +196,38 @@ describe("showAuthOverview", () => {
     expect(text).toContain("flow: client_credentials");
     expect(text).toContain("registration: static");
     expect(text).toContain("client: static client information (machine-client)");
-    expect(text).toContain("authorization_code uses the system browser with a 127.0.0.1 loopback callback");
-    expect(text).toContain("Tokens, client registration, and callback session state are stored under ~/.pi/agent/mcp-auth");
+    expect(text).toContain("authorization_code reuses stored tokens and silent refresh first, then uses the system browser with a 127.0.0.1 loopback callback");
+    expect(text).toContain("Pi stores tokens, client registration, and callback session state under ~/.pi/agent/mcp-auth.");
+    expect(text).toContain("registration.mode=auto prefers static client info, then metadata URL/CIMD, then dynamic registration.");
     expect(text).toContain("HTTP auth failures stay auth failures; StreamableHTTP only falls back to SSE when the transport is incompatible.");
     expect(text).toContain("Use /mcp auth (or /mcp-auth) to show this summary again");
+  });
+
+  it("describes env-backed static client info in auth summaries", async () => {
+    const state = createBaseState();
+    state.config = {
+      mcpServers: {
+        machine: {
+          url: "https://machine.example.com/mcp",
+          auth: {
+            type: "oauth",
+            grantType: "client_credentials",
+            registration: { mode: "static" },
+            client: {
+              information: {
+                clientIdEnv: "MACHINE_CLIENT_ID",
+                clientSecretEnv: "MACHINE_CLIENT_SECRET",
+              },
+            },
+          },
+        },
+      },
+    };
+
+    const { ctx, notify } = createUiHarness();
+    await showAuthOverview(state, ctx);
+
+    expect(notifiedText(notify)).toContain("client: static client information (clientId from $MACHINE_CLIENT_ID)");
   });
 });
 
@@ -249,8 +277,8 @@ describe("authenticateServer", () => {
     expect(text).toContain('MCP auth for "demo":');
     expect(text).toContain("flow: authorization_code");
     expect(text).toContain("registration: auto (static client info -> metadata URL/CIMD -> dynamic registration)");
-    expect(text).toContain("Starting browser-based authorization_code auth. Pi will use your system browser with a 127.0.0.1 loopback callback if fresh sign-in is required.");
-    expect(text).toContain("Tokens, client registration, and callback session state are stored under ~/.pi/agent/mcp-auth and silently refreshed when possible.");
+    expect(text).toContain("Starting browser-based authorization_code auth. Pi reuses stored tokens and silent refresh first; if sign-in is still required, it opens your system browser and waits for the 127.0.0.1 loopback callback.");
+    expect(text).toContain("Pi stores tokens, client registration, and callback session state under ~/.pi/agent/mcp-auth.");
     expect(text).toContain("Background reconnects never open a browser; Pi only launches auth on an intentional retry.");
     expect(text).toContain("HTTP auth failures stay auth failures; StreamableHTTP only falls back to SSE when the transport itself is incompatible.");
     expect(text).toContain('Compatibility note: legacy auth: "oauth" config defaults to authorization_code with automatic registration.');

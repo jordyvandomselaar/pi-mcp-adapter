@@ -42,7 +42,7 @@ function stripAnsi(text: string): string {
 }
 
 function renderText(panel: { render(width: number): string[] }): string {
-  return stripAnsi(panel.render(140).join("\n"));
+  return stripAnsi(panel.render(220).join("\n"));
 }
 
 function flushPromises(): Promise<void> {
@@ -119,7 +119,7 @@ describe("createMcpPanel auth UX", () => {
       panel.handleInput("\n");
 
       expect(renderText(panel)).toContain(
-        "Authentication required — press Ctrl+R to start or retry browser sign-in for demo.",
+        "Auth required — Ctrl+R starts browser sign-in. Background reconnects stay no-browser.",
       );
     } finally {
       panel.dispose();
@@ -163,7 +163,7 @@ describe("createMcpPanel auth UX", () => {
 
       panel.handleInput("\n");
       expect(renderText(panel)).toContain(
-        "Authentication required — press Ctrl+R to retry the non-interactive client_credentials token exchange for machine.",
+        "Auth required — Ctrl+R retries non-interactive client_credentials. No browser will open.",
       );
     } finally {
       panel.dispose();
