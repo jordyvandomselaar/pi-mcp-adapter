@@ -270,8 +270,10 @@ export const DEFAULT_OAUTH_GRANT_TYPE: OAuthGrantType = "authorization_code";
 export const DEFAULT_OAUTH_REGISTRATION_MODE: OAuthRegistrationMode = "auto";
 
 export interface OAuthClientInformationConfig {
-  clientId: string;
+  clientId?: string;
+  clientIdEnv?: string;
   clientSecret?: string;
+  clientSecretEnv?: string;
   clientIdIssuedAt?: number;
   clientSecretExpiresAt?: number;
 }

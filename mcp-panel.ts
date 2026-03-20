@@ -1,5 +1,6 @@
 import { matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerProvenance } from "./types.js";
+import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerDefinition, ServerProvenance } from "./types.js";
+import { getServerAuthType, usesClientCredentialsOAuth, usesInteractiveOAuth } from "./types.js";
 import { resourceNameToToolName } from "./resource-tools.js";
 import type { MetadataCache, ServerCacheEntry, CachedTool } from "./metadata-cache.js";
 
@@ -90,6 +91,7 @@ interface ToolState {
 
 interface ServerState {
   name: string;
+  definition: ServerDefinition;
   expanded: boolean;
   source: "user" | "project" | "import";
   importKind?: string;
@@ -177,6 +179,7 @@ class McpPanel {
 
       this.servers.push({
         name: serverName,
+        definition,
         expanded: false,
         source: prov?.kind ?? "user",
         importKind: prov?.importKind,
@@ -244,6 +247,42 @@ class McpPanel {
 
   private updateDirty(): void {
     this.dirty = this.servers.some((s) => s.tools.some((t) => t.isDirect !== t.wasDirect));
+  }
+
+  private getReconnectNotice(server: ServerState): string {
+    if (usesClientCredentialsOAuth(server.definition)) {
+      return `Connecting to ${server.name} — requesting a token with configured client credentials. No browser should open.`;
+    }
+
+    if (usesInteractiveOAuth(server.definition)) {
+      return `Connecting to ${server.name} — complete any browser sign-in prompts, then return here.`;
+    }
+
+    return `Connecting to ${server.name}...`;
+  }
+
+  private getNeedsAuthNotice(server: ServerState): string {
+    if (usesClientCredentialsOAuth(server.definition)) {
+      return `Authentication required — press Ctrl+R to retry the non-interactive client_credentials token exchange for ${server.name}.`;
+    }
+
+    return `Authentication required — press Ctrl+R to start or retry browser sign-in for ${server.name}.`;
+  }
+
+  private getAuthModeLabel(server: ServerState): string | null {
+    if (getServerAuthType(server.definition) !== "oauth") {
+      return null;
+    }
+
+    if (usesClientCredentialsOAuth(server.definition)) {
+      return "(client credentials)";
+    }
+
+    if (usesInteractiveOAuth(server.definition)) {
+      return "(browser auth)";
+    }
+
+    return "(oauth)";
   }
 
   private buildResult(): McpPanelResult {
@@ -352,7 +391,7 @@ class McpPanel {
       const server = this.servers[item.serverIndex];
       if (item.type === "server") {
         if (server.connectionStatus === "needs-auth") {
-          this.authNotice = `Authentication required — press Ctrl+R to start or retry browser sign-in for ${server.name}.`;
+          this.authNotice = this.getNeedsAuthNotice(server);
           return;
         }
         server.expanded = !server.expanded;
@@ -374,7 +413,7 @@ class McpPanel {
       if (!item) return;
       const server = this.servers[item.serverIndex];
       if (server.connectionStatus === "connecting") return;
-      this.authNotice = `Connecting to ${server.name} — complete any browser sign-in prompts, then return here.`;
+      this.authNotice = this.getReconnectNotice(server);
       server.connectionStatus = "connecting";
       this.callbacks.reconnect(server.name).then((connected) => {
         server.connectionStatus = this.callbacks.getConnectionStatus(server.name);
@@ -512,15 +551,21 @@ class McpPanel {
 
   private describeReconnectOutcome(server: ServerState, connected: boolean): string | null {
     if (server.connectionStatus === "connected") {
-      return `Connected to ${server.name}.`;
+      return usesClientCredentialsOAuth(server.definition)
+        ? `Connected to ${server.name} using client_credentials.`
+        : `Connected to ${server.name}.`;
     }
 
     if (server.connectionStatus === "needs-auth") {
-      return `Authentication is still required for ${server.name}. If the browser flow was cancelled, expired, or rejected, press Ctrl+R to try again.`;
+      return usesClientCredentialsOAuth(server.definition)
+        ? `Authentication is still required for ${server.name}. Check the configured client credentials or token endpoint settings, then press Ctrl+R to retry.`
+        : `Authentication is still required for ${server.name}. If the browser flow was cancelled, expired, or rejected, press Ctrl+R to try again.`;
     }
 
     if (server.connectionStatus === "failed" || !connected) {
-      return `Reconnect failed for ${server.name}. Check the browser flow or logs, then press Ctrl+R to retry.`;
+      return usesClientCredentialsOAuth(server.definition)
+        ? `Reconnect failed for ${server.name}. Check the configured client credentials or token endpoint settings, then press Ctrl+R to retry.`
+        : `Reconnect failed for ${server.name}. Check the browser flow or logs, then press Ctrl+R to retry.`;
     }
 
     return `Reconnect did not complete for ${server.name}. Press Ctrl+R to retry.`;
@@ -686,6 +731,8 @@ class McpPanel {
 
     const nameStr = isCursor ? bold(fg(t.selected, server.name)) : server.name;
     const importLabel = server.source === "import" ? fg(t.description, ` (${server.importKind ?? "import"})`) : "";
+    const authLabel = this.getAuthModeLabel(server);
+    const authSuffix = authLabel ? fg(t.description, ` ${authLabel}`) : "";
     const statusBadge = this.renderConnectionBadge(server);
 
     const directCount = server.tools.filter((t) => t.isDirect).length;
@@ -713,7 +760,7 @@ class McpPanel {
     }
 
     const suffix = suffixParts.length > 0 ? `  ${suffixParts.join("  ")}` : "";
-    return `${prefix} ${toggleIcon} ${nameStr}${importLabel}${suffix}`;
+    return `${prefix} ${toggleIcon} ${nameStr}${importLabel}${authSuffix}${suffix}`;
   }
 
   private renderToolRow(tool: ToolState, isCursor: boolean, innerW: number): string {

@@ -636,16 +636,29 @@ function isAuthRelatedTransportError(error: unknown): boolean {
 function toOAuthClientInformation(
   config?: OAuthClientInformationConfig,
 ): OAuthClientInformationMixed | undefined {
-  if (!config?.clientId) {
+  const clientId = resolveConfiguredSecret(config?.clientId, config?.clientIdEnv);
+  if (!clientId) {
     return undefined;
   }
 
   return {
-    client_id: config.clientId,
-    client_secret: config.clientSecret,
+    client_id: clientId,
+    client_secret: resolveConfiguredSecret(config?.clientSecret, config?.clientSecretEnv),
     client_id_issued_at: config.clientIdIssuedAt,
     client_secret_expires_at: config.clientSecretExpiresAt,
   };
+}
+
+function resolveConfiguredSecret(value?: string, envName?: string): string | undefined {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+
+  if (typeof envName === "string" && envName.length > 0) {
+    return process.env[envName];
+  }
+
+  return undefined;
 }
 
 function toOAuthClientMetadata(

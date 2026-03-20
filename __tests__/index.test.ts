@@ -105,6 +105,49 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+describe("mcp command auth routing", () => {
+  it("routes /mcp auth to the new auth UX while keeping /mcp-auth as compatibility", async () => {
+    const state = createState();
+    initializeMcp.mockResolvedValue(state);
+
+    const { default: mcpAdapter } = await import("../index.js");
+    const { pi, commands, eventHandlers } = createPiHarness();
+    mcpAdapter(pi as never);
+
+    const mcp = commands.get("mcp");
+    expect(mcp).toBeTruthy();
+    expect(mcp?.description).toBe("Show the MCP panel/status, manage auth, and reconnect MCP servers");
+
+    const ctx = {
+      hasUI: true,
+      ui: {
+        notify: vi.fn(),
+      },
+    };
+
+    const sessionStart = eventHandlers.get("session_start");
+    expect(sessionStart).toBeTruthy();
+    await sessionStart?.({}, ctx);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await mcp?.handler("auth", ctx);
+    expect(showAuthOverview).toHaveBeenCalledWith(state, ctx);
+
+    await mcp?.handler("auth status", ctx);
+    expect(showAuthOverview).toHaveBeenCalledTimes(2);
+
+    await mcp?.handler("auth help", ctx);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("/mcp auth <server>  Start or retry auth/token exchange for one OAuth-configured server"),
+      "info",
+    );
+
+    await mcp?.handler("auth demo", ctx);
+    expect(authenticateServer).toHaveBeenCalledWith(state, "demo", ctx);
+  });
+});
+
 describe("mcp-auth command registration", () => {
   it("registers status/help semantics and routes auth requests", async () => {
     const state = createState();

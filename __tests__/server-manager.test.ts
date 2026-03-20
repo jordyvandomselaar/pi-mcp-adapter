@@ -250,6 +250,56 @@ describe("McpServerManager HTTP transport selection", () => {
     }
   });
 
+  it("resolves env-backed client_credentials client info for non-interactive auth", async () => {
+    const originalClientId = process.env.PI_TEST_MACHINE_CLIENT_ID;
+    const originalClientSecret = process.env.PI_TEST_MACHINE_CLIENT_SECRET;
+    process.env.PI_TEST_MACHINE_CLIENT_ID = "machine-env-client";
+    process.env.PI_TEST_MACHINE_CLIENT_SECRET = "machine-env-secret";
+
+    const harness = createTestManager({
+      connectHandler: async (transport) => {
+        expect(transport.authProvider).toBeTruthy();
+      },
+    });
+
+    try {
+      const definition: ServerDefinition = {
+        url: "https://machine.example.com/mcp",
+        auth: {
+          type: "oauth",
+          grantType: "client_credentials",
+          client: {
+            information: {
+              clientIdEnv: "PI_TEST_MACHINE_CLIENT_ID",
+              clientSecretEnv: "PI_TEST_MACHINE_CLIENT_SECRET",
+            },
+          },
+        },
+      };
+
+      const transport = await (harness.manager as unknown as {
+        createHttpTransport: (definition: ServerDefinition, serverName: string) => Promise<FakeHttpTransport>;
+      }).createHttpTransport(definition, "machine-server");
+
+      const provider = transport.authProvider as {
+        clientInformation: () => Promise<{ client_id?: string; client_secret?: string } | undefined>;
+      };
+
+      await expect(provider.clientInformation()).resolves.toEqual({
+        client_id: "machine-env-client",
+        client_secret: "machine-env-secret",
+        client_id_issued_at: undefined,
+        client_secret_expires_at: undefined,
+      });
+    } finally {
+      harness.cleanup();
+      if (originalClientId === undefined) delete process.env.PI_TEST_MACHINE_CLIENT_ID;
+      else process.env.PI_TEST_MACHINE_CLIENT_ID = originalClientId;
+      if (originalClientSecret === undefined) delete process.env.PI_TEST_MACHINE_CLIENT_SECRET;
+      else process.env.PI_TEST_MACHINE_CLIENT_SECRET = originalClientSecret;
+    }
+  });
+
   it("does not treat 403 auth failures as transport incompatibility", async () => {
     const harness = createTestManager({
       connectHandler: async () => {

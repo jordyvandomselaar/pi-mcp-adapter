@@ -466,7 +466,10 @@ export function getAuthFingerprintInputFromServer(definition: ServerEntry): Auth
     serverUrl: definition.url,
     issuer: oauth.issuer,
     grantType: oauth.grantType,
-    clientId: oauth.client?.information?.clientId,
+    clientId: resolveConfiguredValue(
+      oauth.client?.information?.clientId,
+      oauth.client?.information?.clientIdEnv,
+    ),
     clientMetadataUrl: oauth.client?.metadataUrl,
     clientMetadata: oauth.client?.metadata as Record<string, unknown> | undefined,
   };
@@ -522,6 +525,18 @@ export function redactAuthRecordForLogs(record: DurableAuthRecord | undefined): 
         }
       : undefined,
   };
+}
+
+function resolveConfiguredValue(value?: string, envName?: string): string | undefined {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+
+  if (typeof envName === "string" && envName.length > 0) {
+    return process.env[envName];
+  }
+
+  return undefined;
 }
 
 function resolveClientIdentity(input: AuthFingerprintInput): string {

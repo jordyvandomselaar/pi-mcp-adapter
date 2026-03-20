@@ -105,6 +105,62 @@ describe("auth-store", () => {
     });
   });
 
+  it("includes env-backed client IDs in auth fingerprints", () => {
+    const originalPrimary = process.env.PI_TEST_CLIENT_ID;
+    const originalSecondary = process.env.PI_TEST_OTHER_CLIENT_ID;
+
+    process.env.PI_TEST_CLIENT_ID = "env-client-123";
+    process.env.PI_TEST_OTHER_CLIENT_ID = "env-client-456";
+
+    try {
+      const envDefinition: ServerEntry = {
+        url: "https://api.example.com/mcp",
+        auth: {
+          type: "oauth",
+          grantType: "client_credentials",
+          client: {
+            information: {
+              clientIdEnv: "PI_TEST_CLIENT_ID",
+            },
+          },
+        },
+      };
+
+      const sameAsExplicit = createAuthFingerprint({
+        serverUrl: "https://api.example.com/mcp",
+        grantType: "client_credentials",
+        clientId: "env-client-123",
+      });
+
+      const differentExplicit = createAuthFingerprint({
+        serverUrl: "https://api.example.com/mcp",
+        grantType: "client_credentials",
+        clientId: "env-client-456",
+      });
+
+      expect(createAuthFingerprintFromServer(envDefinition)).toBe(sameAsExplicit);
+      expect(createAuthFingerprintFromServer({
+        ...envDefinition,
+        auth: {
+          type: "oauth",
+          grantType: "client_credentials",
+          client: {
+            information: {
+              clientIdEnv: "PI_TEST_OTHER_CLIENT_ID",
+            },
+          },
+        },
+      })).toBe(differentExplicit);
+      expect(sameAsExplicit).not.toBe(differentExplicit);
+    } finally {
+      if (originalPrimary === undefined) delete process.env.PI_TEST_CLIENT_ID;
+      else process.env.PI_TEST_CLIENT_ID = originalPrimary;
+
+      if (originalSecondary === undefined) delete process.env.PI_TEST_OTHER_CLIENT_ID;
+      else process.env.PI_TEST_OTHER_CLIENT_ID = originalSecondary;
+    }
+  });
+
   it("persists durable tokens/client data separately from ephemeral verifier state", () => {
     const rootDir = makeTempDir();
     const store = new FileAuthStore({ rootDir, legacyRootDir: join(rootDir, "legacy") });

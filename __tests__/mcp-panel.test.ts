@@ -42,7 +42,7 @@ function stripAnsi(text: string): string {
 }
 
 function renderText(panel: { render(width: number): string[] }): string {
-  return stripAnsi(panel.render(96).join("\n"));
+  return stripAnsi(panel.render(140).join("\n"));
 }
 
 function flushPromises(): Promise<void> {
@@ -54,8 +54,9 @@ async function createPanel(options: {
   reconnect?: McpPanelCallbacks["reconnect"];
   refreshCacheAfterReconnect?: McpPanelCallbacks["refreshCacheAfterReconnect"];
   cache?: MetadataCache;
+  config?: McpConfig;
 }) {
-  const config: McpConfig = {
+  const config: McpConfig = options.config ?? {
     mcpServers: {
       demo: {
         url: "https://api.example.com/mcp",
@@ -119,6 +120,50 @@ describe("createMcpPanel auth UX", () => {
 
       expect(renderText(panel)).toContain(
         "Authentication required — press Ctrl+R to start or retry browser sign-in for demo.",
+      );
+    } finally {
+      panel.dispose();
+    }
+  });
+
+  it("shows flow-specific auth copy for client_credentials servers", async () => {
+    const { panel } = await createPanel({
+      statusByServer: { machine: "needs-auth" },
+      config: {
+        mcpServers: {
+          machine: {
+            url: "https://machine.example.com/mcp",
+            auth: { type: "oauth", grantType: "client_credentials" },
+          },
+        },
+      },
+      cache: {
+        version: 1,
+        servers: {
+          machine: {
+            configHash: "hash-machine",
+            cachedAt: Date.now(),
+            tools: [
+              {
+                name: "sync",
+                description: "Sync machine credentials",
+                inputSchema: { type: "object", properties: {} },
+              },
+            ],
+            resources: [],
+          },
+        },
+      },
+    });
+
+    try {
+      const initial = renderText(panel);
+      expect(initial).toContain("machine (client credentials)");
+      expect(initial).toContain("[needs auth]");
+
+      panel.handleInput("\n");
+      expect(renderText(panel)).toContain(
+        "Authentication required — press Ctrl+R to retry the non-interactive client_credentials token exchange for machine.",
       );
     } finally {
       panel.dispose();

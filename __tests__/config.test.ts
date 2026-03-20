@@ -104,6 +104,45 @@ describe("loadMcpConfig auth parsing", () => {
     });
   });
 
+  it("retains env-backed client_credentials config fields", () => {
+    const root = mkdtempSync(join(tmpdir(), "pi-mcp-config-"));
+    tempDirs.push(root);
+
+    const configPath = join(root, "mcp.json");
+    writeJson(configPath, {
+      mcpServers: {
+        machine: {
+          url: "https://machine.example.com/mcp",
+          auth: {
+            type: "oauth",
+            grantType: "client_credentials",
+            client: {
+              information: {
+                clientIdEnv: "MCP_CLIENT_ID",
+                clientSecretEnv: "MCP_CLIENT_SECRET",
+              },
+            },
+          },
+        },
+      },
+    } satisfies McpConfig);
+
+    const config = loadMcpConfig(configPath);
+    const definition = config.mcpServers.machine;
+
+    expect(getResolvedOAuthAuthConfig(definition)).toMatchObject({
+      type: "oauth",
+      grantType: "client_credentials",
+      registration: { mode: "auto" },
+      client: {
+        information: {
+          clientIdEnv: "MCP_CLIENT_ID",
+          clientSecretEnv: "MCP_CLIENT_SECRET",
+        },
+      },
+    });
+  });
+
   it("imports OAuth object configs from supported external config files", () => {
     const root = mkdtempSync(join(tmpdir(), "pi-mcp-config-"));
     tempDirs.push(root);

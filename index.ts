@@ -79,7 +79,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("mcp", {
-    description: "Show the MCP panel/status and manage server connections",
+    description: "Show the MCP panel/status, manage auth, and reconnect MCP servers",
     handler: async (args, ctx) => {
       if (!state && initPromise) {
         try {
@@ -104,6 +104,29 @@ export default function mcpAdapter(pi: ExtensionAPI) {
           break;
         case "tools":
           await showTools(state, ctx);
+          break;
+        case "auth":
+          if (!targetServer || targetServer === "status") {
+            await showAuthOverview(state, ctx);
+            break;
+          }
+
+          if (targetServer === "help") {
+            if (ctx.hasUI) {
+              ctx.ui.notify(
+                "Usage:\n" +
+                "  /mcp auth           Show auth status for configured MCP servers\n" +
+                "  /mcp auth status    Show the same auth status summary\n" +
+                "  /mcp auth <server>  Start or retry auth/token exchange for one OAuth-configured server\n" +
+                "\n" +
+                "authorization_code servers may open your browser if user sign-in is required. client_credentials servers stay non-interactive.",
+                "info",
+              );
+            }
+            break;
+          }
+
+          await authenticateServer(state, targetServer, ctx);
           break;
         case "status":
         case "":
