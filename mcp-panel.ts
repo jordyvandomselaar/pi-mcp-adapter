@@ -352,7 +352,7 @@ class McpPanel {
       const server = this.servers[item.serverIndex];
       if (item.type === "server") {
         if (server.connectionStatus === "needs-auth") {
-          this.authNotice = `OAuth required — press Ctrl+R to reconnect and continue the browser flow for ${server.name}`;
+          this.authNotice = `Authentication required — press Ctrl+R to start or retry browser sign-in for ${server.name}.`;
           return;
         }
         server.expanded = !server.expanded;
@@ -374,8 +374,9 @@ class McpPanel {
       if (!item) return;
       const server = this.servers[item.serverIndex];
       if (server.connectionStatus === "connecting") return;
+      this.authNotice = `Connecting to ${server.name} — complete any browser sign-in prompts, then return here.`;
       server.connectionStatus = "connecting";
-      this.callbacks.reconnect(server.name).then(() => {
+      this.callbacks.reconnect(server.name).then((connected) => {
         server.connectionStatus = this.callbacks.getConnectionStatus(server.name);
         if (server.connectionStatus === "connected") {
           const entry = this.callbacks.refreshCacheAfterReconnect(server.name);
@@ -384,9 +385,11 @@ class McpPanel {
           }
           server.hasCachedData = true;
         }
+        this.authNotice = this.describeReconnectOutcome(server, connected);
         this.tui.requestRender();
       }).catch(() => {
         server.connectionStatus = "failed";
+        this.authNotice = `Reconnect failed for ${server.name}. Check the browser flow or logs, then press Ctrl+R to retry.`;
         this.tui.requestRender();
       });
       return;
@@ -507,6 +510,40 @@ class McpPanel {
     this.updateDirty();
   }
 
+  private describeReconnectOutcome(server: ServerState, connected: boolean): string | null {
+    if (server.connectionStatus === "connected") {
+      return `Connected to ${server.name}.`;
+    }
+
+    if (server.connectionStatus === "needs-auth") {
+      return `Authentication is still required for ${server.name}. If the browser flow was cancelled, expired, or rejected, press Ctrl+R to try again.`;
+    }
+
+    if (server.connectionStatus === "failed" || !connected) {
+      return `Reconnect failed for ${server.name}. Check the browser flow or logs, then press Ctrl+R to retry.`;
+    }
+
+    return `Reconnect did not complete for ${server.name}. Press Ctrl+R to retry.`;
+  }
+
+  private renderConnectionBadge(server: ServerState): string {
+    const t = this.t;
+
+    switch (server.connectionStatus) {
+      case "connected":
+        return fg(t.direct, "[connected]");
+      case "needs-auth":
+        return fg(t.needsAuth, "[needs auth]");
+      case "failed":
+        return fg(t.cancel, "[failed]");
+      case "connecting":
+        return fg(t.needsAuth, "[connecting]");
+      case "idle":
+      default:
+        return "";
+    }
+  }
+
   render(width: number): string[] {
     const innerW = width - 2;
     const lines: string[] = [];
@@ -609,8 +646,8 @@ class McpPanel {
     const hints = [
       italic("↑↓") + " navigate",
       italic("space") + " toggle",
-      italic("⏎") + " expand",
-      italic("ctrl+r") + " reconnect",
+      italic("⏎") + " expand/hint",
+      italic("ctrl+r") + " connect/auth",
       italic("?") + " desc search",
       italic("ctrl+s") + " save",
       italic("esc") + " clear/close",
@@ -649,10 +686,7 @@ class McpPanel {
 
     const nameStr = isCursor ? bold(fg(t.selected, server.name)) : server.name;
     const importLabel = server.source === "import" ? fg(t.description, ` (${server.importKind ?? "import"})`) : "";
-
-    if (!server.hasCachedData) {
-      return `${prefix}   ${nameStr}${importLabel}  ${fg(t.description, "(not cached)")}`;
-    }
+    const statusBadge = this.renderConnectionBadge(server);
 
     const directCount = server.tools.filter((t) => t.isDirect).length;
     const totalCount = server.tools.length;
@@ -663,17 +697,23 @@ class McpPanel {
       toggleIcon = fg(t.needsAuth, "◐");
     }
 
-    let toolInfo = "";
+    const suffixParts: string[] = [];
+    if (statusBadge) suffixParts.push(statusBadge);
+    if (!server.hasCachedData) {
+      suffixParts.push(fg(t.description, "(not cached)"));
+    }
+
     if (totalCount > 0) {
-      toolInfo = `${directCount}/${totalCount}`;
+      let toolInfo = `${directCount}/${totalCount}`;
       if (directCount > 0) {
         const tokens = server.tools.filter((t) => t.isDirect).reduce((s, t) => s + t.estimatedTokens, 0);
         toolInfo += `  ~${tokens.toLocaleString()}`;
       }
-      toolInfo = fg(t.description, toolInfo);
+      suffixParts.push(fg(t.description, toolInfo));
     }
 
-    return `${prefix} ${toggleIcon} ${nameStr}${importLabel}  ${toolInfo}`;
+    const suffix = suffixParts.length > 0 ? `  ${suffixParts.join("  ")}` : "";
+    return `${prefix} ${toggleIcon} ${nameStr}${importLabel}${suffix}`;
   }
 
   private renderToolRow(tool: ToolState, isCursor: boolean, innerW: number): string {

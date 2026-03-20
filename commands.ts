@@ -8,9 +8,15 @@ import {
   type McpExtensionState,
 } from "./state.js";
 import type { McpConfig, ServerEntry, McpPanelCallbacks, McpPanelResult, ServerDefinition } from "./types.js";
-import { getServerAuthType } from "./types.js";
+import { getOAuthAuthConfig, getServerAuthType } from "./types.js";
+import {
+  AuthSessionCancelledError,
+  AuthSessionError,
+  AuthSessionExpiredError,
+  InvalidAuthCallbackError,
+} from "./auth-session-manager.js";
 import { getServerProvenance, writeDirectToolsConfig } from "./config.js";
-import { lazyConnect, updateMetadataCache, updateStatusBar, getFailureAgeSeconds } from "./init.js";
+import { updateMetadataCache, updateStatusBar, getFailureAgeSeconds } from "./init.js";
 import { loadMetadataCache } from "./metadata-cache.js";
 import { getStoredTokens } from "./oauth-handler.js";
 import { buildToolMetadata } from "./tool-metadata.js";
@@ -35,6 +41,103 @@ function connectWithPolicy(
   };
 
   return managed.connect(serverName, definition, options);
+}
+
+interface IntentionalReconnectResult {
+  connected: boolean;
+  failedTools: number;
+  message: string;
+  level: "info" | "warning" | "error";
+}
+
+function usesInteractiveOAuth(definition: ServerDefinition | undefined): boolean {
+  const oauth = definition ? getOAuthAuthConfig(definition) : undefined;
+  if (!oauth) {
+    return false;
+  }
+
+  return (oauth.grantType ?? "authorization_code") === "authorization_code";
+}
+
+function summarizeAuthSessionFailure(serverName: string, error: AuthSessionError): string {
+  if (error instanceof AuthSessionCancelledError) {
+    return `MCP: Browser sign-in for "${serverName}" was cancelled. Press Ctrl+R or run /mcp-auth ${serverName} to try again.`;
+  }
+
+  if (error instanceof AuthSessionExpiredError) {
+    return `MCP: Browser sign-in for "${serverName}" expired before completion. Press Ctrl+R or run /mcp-auth ${serverName} to try again.`;
+  }
+
+  if (error instanceof InvalidAuthCallbackError) {
+    return `MCP: Browser sign-in callback for "${serverName}" did not complete successfully. Press Ctrl+R or run /mcp-auth ${serverName} to try again.`;
+  }
+
+  return `MCP: Browser sign-in for "${serverName}" did not complete. Press Ctrl+R or run /mcp-auth ${serverName} to try again.`;
+}
+
+async function reconnectServerWithUserIntent(
+  state: McpExtensionState,
+  serverName: string,
+  definition: ServerDefinition,
+): Promise<IntentionalReconnectResult> {
+  await state.manager.close(serverName);
+
+  try {
+    const connection = await connectWithPolicy(state, serverName, definition, {
+      interactiveAllowed: true,
+      interactionReason: "user",
+    });
+    const prefix = state.config.settings?.toolPrefix ?? "server";
+
+    clearServerNeedsAuth(state, serverName);
+    const { metadata, failedTools } = buildToolMetadata(connection.tools, connection.resources, definition, serverName, prefix);
+    state.toolMetadata.set(serverName, metadata);
+    updateMetadataCache(state, serverName);
+    state.failureTracker.delete(serverName);
+
+    return {
+      connected: true,
+      failedTools: failedTools.length,
+      message: `MCP: Reconnected to ${serverName} (${connection.tools.length} tools, ${connection.resources.length} resources)`,
+      level: "info",
+    };
+  } catch (error) {
+    if (isNeedsAuthError(error)) {
+      state.failureTracker.delete(serverName);
+      markServerNeedsAuth(state, serverName, {
+        error,
+        reason: "user",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        connected: false,
+        failedTools: 0,
+        message: `MCP: ${serverName} needs authentication. Continue or restart the browser sign-in flow, then retry.`,
+        level: "warning",
+      };
+    }
+
+    if (error instanceof AuthSessionError) {
+      const message = summarizeAuthSessionFailure(serverName, error);
+      state.failureTracker.delete(serverName);
+      markServerNeedsAuth(state, serverName, { reason: "user", message });
+      return {
+        connected: false,
+        failedTools: 0,
+        message,
+        level: "warning",
+      };
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    state.failureTracker.set(serverName, Date.now());
+    return {
+      connected: false,
+      failedTools: 0,
+      message: `MCP: Failed to reconnect to ${serverName}: ${message}`,
+      level: "error",
+    };
+  }
 }
 
 export async function showStatus(state: McpExtensionState, ctx: ExtensionContext): Promise<void> {
@@ -114,44 +217,12 @@ export async function reconnectServers(
     : Object.entries(state.config.mcpServers);
 
   for (const [name, definition] of entries) {
-    try {
-      await state.manager.close(name);
+    const result = await reconnectServerWithUserIntent(state, name, definition);
 
-      const connection = await connectWithPolicy(state, name, definition, {
-        interactiveAllowed: true,
-        interactionReason: "user",
-      });
-      const prefix = state.config.settings?.toolPrefix ?? "server";
-
-      clearServerNeedsAuth(state, name);
-      const { metadata, failedTools } = buildToolMetadata(connection.tools, connection.resources, definition, name, prefix);
-      state.toolMetadata.set(name, metadata);
-      updateMetadataCache(state, name);
-      state.failureTracker.delete(name);
-
-      if (ctx.hasUI) {
-        ctx.ui.notify(
-          `MCP: Reconnected to ${name} (${connection.tools.length} tools, ${connection.resources.length} resources)`,
-          "info"
-        );
-        if (failedTools.length > 0) {
-          ctx.ui.notify(`MCP: ${name} - ${failedTools.length} tools skipped`, "warning");
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (isNeedsAuthError(error)) {
-        state.failureTracker.delete(name);
-        markServerNeedsAuth(state, name, { error, reason: "user", message });
-        if (ctx.hasUI) {
-          ctx.ui.notify(`MCP: ${name} needs authentication before it can reconnect`, "warning");
-        }
-        continue;
-      }
-
-      state.failureTracker.set(name, Date.now());
-      if (ctx.hasUI) {
-        ctx.ui.notify(`MCP: Failed to reconnect to ${name}: ${message}`, "error");
+    if (ctx.hasUI) {
+      ctx.ui.notify(result.message, result.level);
+      if (result.connected && result.failedTools > 0) {
+        ctx.ui.notify(`MCP: ${name} - ${result.failedTools} tools skipped`, "warning");
       }
     }
   }
@@ -220,14 +291,30 @@ export async function openMcpPanel(
 
   const callbacks: McpPanelCallbacks = {
     reconnect: async (serverName: string) => {
-      return lazyConnect(state, serverName);
+      const definition = config.mcpServers[serverName];
+      if (!definition) {
+        if (ctx.hasUI) {
+          ctx.ui.notify(`Server "${serverName}" not found in config`, "error");
+        }
+        return false;
+      }
+
+      const result = await reconnectServerWithUserIntent(state, serverName, definition);
+      updateStatusBar(state);
+      if (ctx.hasUI) {
+        ctx.ui.notify(result.message, result.level);
+        if (result.connected && result.failedTools > 0) {
+          ctx.ui.notify(`MCP: ${serverName} - ${result.failedTools} tools skipped`, "warning");
+        }
+      }
+      return result.connected;
     },
     getConnectionStatus: (serverName: string) => {
       const definition = config.mcpServers[serverName];
       const connection = state.manager.getConnection(serverName);
       if (connection?.status === "connected") return "connected";
       if (serverNeedsAuth(state, serverName)) return "needs-auth";
-      if (definition && getServerAuthType(definition) === "oauth" && getStoredTokens(serverName, definition) === undefined) {
+      if (usesInteractiveOAuth(definition) && getStoredTokens(serverName, definition) === undefined) {
         return "needs-auth";
       }
       if (getFailureAgeSeconds(state, serverName) !== null) return "failed";
