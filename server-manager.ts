@@ -10,7 +10,11 @@ import type {
   ServerStreamResultPatchNotification,
   Transport,
 } from "./types.js";
-import { serverStreamResultPatchNotificationSchema } from "./types.js";
+import {
+  getBearerAuthConfig,
+  getServerAuthType,
+  serverStreamResultPatchNotificationSchema,
+} from "./types.js";
 import { getStoredTokens } from "./oauth-handler.js";
 import { resolveNpxBinary } from "./npx-resolver.js";
 import { logger } from "./logger.js";
@@ -126,20 +130,22 @@ export class McpServerManager {
     const headers = resolveHeaders(definition.headers) ?? {};
     
     // Add bearer token if configured
-    if (definition.auth === "bearer") {
-      const token = definition.bearerToken 
-        ?? (definition.bearerTokenEnv ? process.env[definition.bearerTokenEnv] : undefined);
+    const authType = getServerAuthType(definition);
+    const bearer = getBearerAuthConfig(definition);
+    if (authType === "bearer") {
+      const token = bearer?.token
+        ?? (bearer?.tokenEnv ? process.env[bearer.tokenEnv] : undefined);
       if (token) {
         headers["Authorization"] = `Bearer ${token}`;
       }
     }
     
     // Handle OAuth auth - use stored tokens
-    if (definition.auth === "oauth") {
+    if (authType === "oauth") {
       if (!serverName) {
         throw new Error("Server name required for OAuth authentication");
       }
-      const tokens = getStoredTokens(serverName);
+      const tokens = getStoredTokens(serverName, definition);
       if (!tokens) {
         throw new Error(
           `No OAuth tokens found for "${serverName}". Run /mcp-auth ${serverName} to authenticate.`

@@ -23,6 +23,9 @@ export interface LogEntry {
 
 type LogHandler = (entry: LogEntry) => void;
 
+const REDACTED = "[redacted]";
+const CIRCULAR = "[circular]";
+
 const LEVEL_PRIORITY: Record<LogLevel, number> = {
   debug: 0,
   info: 1,
@@ -65,10 +68,12 @@ class Logger {
   private emit(level: LogLevel, message: string, context?: LogContext, error?: Error): void {
     if (!this.shouldLog(level)) return;
 
+    const mergedContext = { ...this.defaultContext, ...context };
+    const sanitizedContext = sanitizeContext(mergedContext);
     const entry: LogEntry = {
       level,
       message,
-      context: { ...this.defaultContext, ...context },
+      context: sanitizedContext,
       error,
       timestamp: new Date(),
     };
@@ -158,6 +163,98 @@ function formatContext(context?: LogContext): string {
     }
   }
   return parts.length > 0 ? `(${parts.join(", ")})` : "";
+}
+
+function sanitizeContext(context?: LogContext): LogContext | undefined {
+  if (!context) return undefined;
+  return sanitizeValue(undefined, context, new WeakSet<object>()) as LogContext;
+}
+
+function sanitizeValue(key: string | undefined, value: unknown, seen: WeakSet<object>): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+
+  if (key && isSensitiveKey(key)) {
+    return REDACTED;
+  }
+
+  if (typeof value === "string") {
+    return sanitizeString(value);
+  }
+
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return value;
+  }
+
+  if (value instanceof URL) {
+    return sanitizeUrl(value);
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => sanitizeValue(key, entry, seen));
+  }
+
+  if (typeof Headers !== "undefined" && value instanceof Headers) {
+    const headers: Record<string, string> = {};
+    for (const [headerKey, headerValue] of value.entries()) {
+      headers[headerKey] = String(sanitizeValue(headerKey, headerValue, seen));
+    }
+    return headers;
+  }
+
+  if (typeof value === "object") {
+    if (seen.has(value)) {
+      return CIRCULAR;
+    }
+
+    seen.add(value);
+    const result: Record<string, unknown> = {};
+    for (const [entryKey, entryValue] of Object.entries(value)) {
+      result[entryKey] = sanitizeValue(entryKey, entryValue, seen);
+    }
+    seen.delete(value);
+    return result;
+  }
+
+  return String(value);
+}
+
+function sanitizeString(value: string): string {
+  if (/^(Bearer|Basic)\s+/i.test(value)) {
+    return REDACTED;
+  }
+
+  try {
+    const url = new URL(value);
+    return sanitizeUrl(url);
+  } catch {
+    return value;
+  }
+}
+
+function sanitizeUrl(url: URL): string {
+  const hasQuery = Boolean(url.search);
+  const hasHash = Boolean(url.hash);
+  return `${url.origin}${url.pathname}${hasQuery ? "?<redacted>" : ""}${hasHash ? "#<redacted>" : ""}`;
+}
+
+function isSensitiveKey(key: string): boolean {
+  const normalized = key.replace(/-/g, "_").toLowerCase();
+  return (
+    normalized === "authorization" ||
+    normalized === "proxy_authorization" ||
+    normalized === "token" ||
+    normalized === "code" ||
+    normalized === "state" ||
+    normalized === "client_secret" ||
+    normalized === "code_verifier" ||
+    normalized === "client_assertion" ||
+    normalized === "jwt_bearer_assertion" ||
+    normalized === "access_token" ||
+    normalized === "refresh_token" ||
+    normalized === "id_token"
+  );
 }
 
 // Singleton instance

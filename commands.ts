@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import type { McpExtensionState } from "./state.js";
 import type { McpConfig, ServerEntry, McpPanelCallbacks, McpPanelResult } from "./types.js";
+import { getServerAuthType } from "./types.js";
 import { getServerProvenance, writeDirectToolsConfig } from "./config.js";
 import { lazyConnect, updateMetadataCache, updateStatusBar, getFailureAgeSeconds } from "./init.js";
 import { loadMetadataCache } from "./metadata-cache.js";
@@ -126,10 +127,12 @@ export async function authenticateServer(
     return;
   }
 
-  if (definition.auth !== "oauth") {
+  const authType = getServerAuthType(definition);
+
+  if (authType !== "oauth") {
     ctx.ui.notify(
       `Server "${serverName}" does not use OAuth authentication.\n` +
-      `Current auth mode: ${definition.auth ?? "none"}`,
+      `Current auth mode: ${authType ?? "none"}`,
       "error"
     );
     return;
@@ -176,7 +179,7 @@ export async function openMcpPanel(
     },
     getConnectionStatus: (serverName: string) => {
       const definition = config.mcpServers[serverName];
-      if (definition?.auth === "oauth" && getStoredTokens(serverName) === undefined) {
+      if (definition && getServerAuthType(definition) === "oauth" && getStoredTokens(serverName, definition) === undefined) {
         return "needs-auth";
       }
       const connection = state.manager.getConnection(serverName);

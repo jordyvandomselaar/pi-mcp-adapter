@@ -261,6 +261,62 @@ export interface McpContent {
 // Pi content block type
 export type ContentBlock = TextContent | ImageContent;
 
+export type LegacyAuthMode = "oauth" | "bearer";
+export type OAuthGrantType = "authorization_code" | "client_credentials";
+export type OAuthRegistrationMode = "auto" | "static" | "metadata-url" | "dynamic";
+
+export interface OAuthClientInformationConfig {
+  clientId: string;
+  clientSecret?: string;
+  clientIdIssuedAt?: number;
+  clientSecretExpiresAt?: number;
+}
+
+export interface OAuthClientMetadataConfig {
+  redirectUris?: string[];
+  tokenEndpointAuthMethod?: string;
+  grantTypes?: OAuthGrantType[];
+  responseTypes?: string[];
+  clientName?: string;
+  clientUri?: string;
+  logoUri?: string;
+  scope?: string;
+  contacts?: string[];
+  tosUri?: string;
+  policyUri?: string;
+  jwksUri?: string;
+  jwks?: unknown;
+  softwareId?: string;
+  softwareVersion?: string;
+  softwareStatement?: string;
+}
+
+export interface OAuthClientConfig {
+  information?: OAuthClientInformationConfig;
+  metadataUrl?: string;
+  metadata?: OAuthClientMetadataConfig;
+}
+
+export interface OAuthAuthConfig {
+  type: "oauth";
+  grantType?: OAuthGrantType;
+  issuer?: string;
+  scope?: string;
+  resource?: string;
+  registration?: {
+    mode?: OAuthRegistrationMode;
+  };
+  client?: OAuthClientConfig;
+}
+
+export interface BearerAuthConfig {
+  type: "bearer";
+  token?: string;
+  tokenEnv?: string;
+}
+
+export type ServerAuth = LegacyAuthMode | OAuthAuthConfig | BearerAuthConfig;
+
 // Server configuration
 export interface ServerEntry {
   command?: string;
@@ -270,7 +326,8 @@ export interface ServerEntry {
   // HTTP fields
   url?: string;
   headers?: Record<string, string>;
-  auth?: "oauth" | "bearer";
+  auth?: ServerAuth;
+  // Legacy bearer shorthand. Prefer auth: { type: "bearer", ... }.
   bearerToken?: string;
   bearerTokenEnv?: string;
   lifecycle?: "keep-alive" | "lazy" | "eager";
@@ -281,6 +338,60 @@ export interface ServerEntry {
   directTools?: boolean | string[];
   // Debug
   debug?: boolean;  // Show server stderr (default: false)
+}
+
+export function getServerAuthType(definition: ServerEntry): LegacyAuthMode | undefined {
+  if (typeof definition.auth === "string") {
+    return definition.auth;
+  }
+
+  if (definition.auth?.type === "oauth" || definition.auth?.type === "bearer") {
+    return definition.auth.type;
+  }
+
+  if (definition.bearerToken || definition.bearerTokenEnv) {
+    return "bearer";
+  }
+
+  return undefined;
+}
+
+export function getOAuthAuthConfig(definition: ServerEntry): OAuthAuthConfig | undefined {
+  if (definition.auth === "oauth") {
+    return { type: "oauth" };
+  }
+
+  return definition.auth && typeof definition.auth === "object" && definition.auth.type === "oauth"
+    ? definition.auth
+    : undefined;
+}
+
+export function getBearerAuthConfig(definition: ServerEntry): BearerAuthConfig | undefined {
+  if (definition.auth === "bearer") {
+    return {
+      type: "bearer",
+      token: definition.bearerToken,
+      tokenEnv: definition.bearerTokenEnv,
+    };
+  }
+
+  if (definition.auth && typeof definition.auth === "object" && definition.auth.type === "bearer") {
+    return {
+      type: "bearer",
+      token: definition.auth.token ?? definition.bearerToken,
+      tokenEnv: definition.auth.tokenEnv ?? definition.bearerTokenEnv,
+    };
+  }
+
+  if (definition.bearerToken || definition.bearerTokenEnv) {
+    return {
+      type: "bearer",
+      token: definition.bearerToken,
+      tokenEnv: definition.bearerTokenEnv,
+    };
+  }
+
+  return undefined;
 }
 
 // Settings
