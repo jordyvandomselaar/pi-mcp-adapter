@@ -1,16 +1,16 @@
 {
-  "name": "pi-mcp-adapter",
+  "name": "@jordyvd/pi-mcp-adapter",
   "version": "2.2.0",
   "description": "MCP (Model Context Protocol) adapter extension for Pi coding agent",
   "type": "module",
   "license": "MIT",
-  "author": "Nico Bailon",
+  "author": "Nico Bailon, Jordy van Domselaar",
   "bin": {
     "pi-mcp-adapter": "./cli.js"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/nicobailon/pi-mcp-adapter"
+    "url": "https://github.com/jordyvandomselaar/pi-mcp-adapter"
   },
   "keywords": [
     "pi-package",
@@ -31,8 +31,7 @@
   "pi": {
     "extensions": [
       "./index.ts"
-    ],
-    "video": "https://github.com/nicobailon/pi-mcp-adapter/raw/refs/heads/main/pi-mcp.mp4"
+    ]
   },
   "files": [
     "cli.js",
