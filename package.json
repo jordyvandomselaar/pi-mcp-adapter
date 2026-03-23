@@ -1,6 +1,6 @@
 {
   "name": "@jordyvd/pi-mcp-adapter",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "MCP (Model Context Protocol) adapter extension for Pi coding agent",
   "type": "module",
   "license": "MIT",
