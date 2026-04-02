@@ -73,6 +73,29 @@ describe("Logger", () => {
 
       expect(entries[0].context?.server).toBe("override-server");
     });
+
+    it("redacts auth secrets from structured context", () => {
+      const entries: LogEntry[] = [];
+      logger.addHandler((entry) => entries.push(entry));
+
+      logger.info("test", {
+        authorization: "Bearer super-secret",
+        nested: {
+          access_token: "token-123",
+          refresh_token: "refresh-123",
+          callbackUrl: "https://example.com/callback?code=abc&state=xyz",
+        },
+      });
+
+      expect(entries[0].context).toEqual({
+        authorization: "[redacted]",
+        nested: {
+          access_token: "[redacted]",
+          refresh_token: "[redacted]",
+          callbackUrl: "https://example.com/callback?<redacted>",
+        },
+      });
+    });
   });
 
   describe("child logger", () => {

@@ -1,13 +1,30 @@
 import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@mariozechner/pi-coding-agent";
 import type { McpExtensionState } from "./state.js";
 import { Type } from "@sinclair/typebox";
-import { showStatus, showTools, reconnectServers, authenticateServer, openMcpPanel } from "./commands.js";
+import { showStatus, showTools, reconnectServers, authenticateServer, openMcpPanel, showAuthOverview } from "./commands.js";
 import { loadMcpConfig } from "./config.js";
 import { buildProxyDescription, createDirectToolExecutor, resolveDirectTools } from "./direct-tools.js";
 import { flushMetadataCache, initializeMcp, updateStatusBar } from "./init.js";
 import { loadMetadataCache } from "./metadata-cache.js";
 import { executeCall, executeConnect, executeDescribe, executeList, executeSearch, executeStatus, executeUiMessages } from "./proxy-modes.js";
 import { getConfigPathFromArgv, truncateAtWord } from "./utils.js";
+
+function buildAuthCommandHelp(commandPrefix: "/mcp auth" | "/mcp-auth"): string {
+  return [
+    "Usage:",
+    `  ${commandPrefix}           Show auth status, flow, registration strategy, and storage hints for configured MCP servers`,
+    `  ${commandPrefix} status    Show the same auth status summary`,
+    `  ${commandPrefix} <server>  Start or retry auth/token exchange for one OAuth-configured HTTP server`,
+    "",
+    "Notes:",
+    "  authorization_code reuses stored tokens and silent refresh first, then opens your system browser if sign-in is still required.",
+    "  The browser flow completes through a 127.0.0.1 loopback callback and Pi stores tokens, client registration, and callback state under ~/.pi/agent/mcp-auth.",
+    "  client_credentials stays non-interactive. Background reconnects never open a browser.",
+    commandPrefix === "/mcp-auth"
+      ? "  Prefer /mcp auth for new usage; /mcp-auth remains a compatibility alias."
+      : "  /mcp-auth remains a compatibility alias for the same flow.",
+  ].join("\n");
+}
 
 export default function mcpAdapter(pi: ExtensionAPI) {
   let state: McpExtensionState | null = null;
@@ -80,7 +97,7 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("mcp", {
-    description: "Show MCP server status",
+    description: "Show the MCP panel/status, manage auth, and reconnect MCP servers",
     handler: async (args, ctx) => {
       if (!state && initPromise) {
         try {
@@ -106,6 +123,21 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         case "tools":
           await showTools(state, ctx);
           break;
+        case "auth":
+          if (!targetServer || (targetServer === "status" && !state.config.mcpServers.status)) {
+            await showAuthOverview(state, ctx);
+            break;
+          }
+
+          if (targetServer === "help" && !state.config.mcpServers.help) {
+            if (ctx.hasUI) {
+              ctx.ui.notify(buildAuthCommandHelp("/mcp auth"), "info");
+            }
+            break;
+          }
+
+          await authenticateServer(state, targetServer, ctx);
+          break;
         case "status":
         case "":
         default:
@@ -120,14 +152,8 @@ export default function mcpAdapter(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("mcp-auth", {
-    description: "Authenticate with an MCP server (OAuth)",
+    description: "Show MCP auth status or start auth for a specific OAuth server",
     handler: async (args, ctx) => {
-      const serverName = args?.trim();
-      if (!serverName) {
-        if (ctx.hasUI) ctx.ui.notify("Usage: /mcp-auth <server-name>", "error");
-        return;
-      }
-
       if (!state && initPromise) {
         try {
           state = await initPromise;
@@ -141,7 +167,20 @@ export default function mcpAdapter(pi: ExtensionAPI) {
         return;
       }
 
-      await authenticateServer(serverName, state.config, ctx);
+      const value = args?.trim() ?? "";
+      if (!value || (value === "status" && !state.config.mcpServers.status)) {
+        await showAuthOverview(state, ctx);
+        return;
+      }
+
+      if (value === "help" && !state.config.mcpServers.help) {
+        if (ctx.hasUI) {
+          ctx.ui.notify(buildAuthCommandHelp("/mcp-auth"), "info");
+        }
+        return;
+      }
+
+      await authenticateServer(state, value, ctx);
     },
   });
 

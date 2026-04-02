@@ -83,14 +83,99 @@ Two calls instead of 26 tools cluttering the context.
 | `args` | Command arguments |
 | `env` | Environment variables (`${VAR}` interpolation) |
 | `cwd` | Working directory |
-| `url` | HTTP endpoint (StreamableHTTP with SSE fallback) |
-| `auth` | `"bearer"` or `"oauth"` |
+| `url` | HTTP endpoint (auth-aware StreamableHTTP; falls back to SSE only for transport incompatibility) |
+| `auth` | `"bearer"`, `"oauth"`, or an auth object (`{ type: "oauth" | "bearer", ... }`) for HTTP auth, browser OAuth, or `client_credentials` |
 | `bearerToken` / `bearerTokenEnv` | Token or env var name |
 | `lifecycle` | `"lazy"` (default), `"eager"`, or `"keep-alive"` |
 | `idleTimeout` | Minutes before idle disconnect (overrides global) |
 | `exposeResources` | Expose MCP resources as tools (default: true) |
 | `directTools` | `true`, `string[]`, or `false` — register tools individually instead of through proxy |
 | `debug` | Show server stderr (default: false) |
+
+### OAuth and HTTP Auth
+
+For static bearer tokens, keep using either `auth: "bearer"` or the object form:
+
+```json
+{
+  "mcpServers": {
+    "internal-api": {
+      "url": "https://api.example.com/mcp",
+      "auth": {
+        "type": "bearer",
+        "tokenEnv": "INTERNAL_API_TOKEN"
+      }
+    }
+  }
+}
+```
+
+OAuth is available for HTTP transports only. Pi now uses the MCP SDK's auth-aware HTTP flow. Use either the legacy shorthand `auth: "oauth"` or the richer object form. The shorthand remains a compatibility alias for browser-based `authorization_code` with automatic registration (`grantType: "authorization_code"`, `registration.mode: "auto"`). For interactive auth, Pi reuses durable auth state and silent refresh first, then intentionally opens your system browser and completes the flow through a local `127.0.0.1` loopback callback if fresh sign-in is still required. There is no embedded browser or manual token copy/paste path.
+
+If an HTTP MCP server omits `auth` entirely, Pi now follows a Codex-style fallback: explicit bearer config still wins, but otherwise Pi will treat the server as OAuth-capable when durable OAuth tokens already exist or the server advertises OAuth metadata/protected-resource metadata.
+
+The auth object also accepts `scope` and `resource` when the upstream server requires them. `resource` overrides the RFC 8707 resource indicator selection, as long as it remains compatible with the MCP server URL / protected resource metadata. `issuer` is reserved for future auth-server discovery overrides and should be omitted for now.
+
+```json
+{
+  "mcpServers": {
+    "github": {
+      "url": "https://mcp.example.com",
+      "auth": {
+        "type": "oauth",
+        "scope": "read:org repo",
+        "client": {
+          "metadata": {
+            "clientName": "Pi MCP Adapter"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+`registration.mode` controls how Pi identifies or registers the OAuth client:
+
+- `auto` (default) — prefer static `client.information`, then `client.metadataUrl` / published client metadata (CIMD), then dynamic client registration
+- `static` — use only `client.information`
+- `metadata-url` — use `client.metadataUrl`
+- `dynamic` — always attempt dynamic client registration
+
+`auto` is the recommended default because it preserves explicit client identity when you have it, reuses published metadata when the server provides it, and only falls back to dynamic client registration when needed.
+
+`client_credentials` is also supported for non-interactive machine auth. Prefer env-backed secrets over checking credentials into `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "service-account": {
+      "url": "https://mcp.example.com",
+      "auth": {
+        "type": "oauth",
+        "grantType": "client_credentials",
+        "registration": { "mode": "static" },
+        "client": {
+          "information": {
+            "clientIdEnv": "SERVICE_ACCOUNT_CLIENT_ID",
+            "clientSecretEnv": "SERVICE_ACCOUNT_CLIENT_SECRET"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Behavior notes:
+
+- `/mcp auth` shows OAuth status, flow, registration strategy, and storage hints. `/mcp auth <server>` intentionally starts or retries auth for a specific server. `/mcp-auth` remains a compatibility launcher for the same flow. In the `/mcp` panel, `Ctrl+R` does the same for the selected server.
+- `authorization_code` always uses your system browser with a `127.0.0.1` loopback callback. The SDK handles PKCE, validates a single-use state, and only opens the browser when stored credentials or silent refresh are not enough.
+- Tokens, client registration, and callback session state are stored under `~/.pi/agent/mcp-auth` and reused across restarts with silent refresh when possible.
+- `client_credentials` stays non-interactive. Pi never opens a browser for that flow and can reuse durable auth state when the provider allows it.
+- Background health checks and keep-alive reconnects never open a browser. They only use stored tokens / silent refresh and mark the server as needing auth if user interaction is required.
+- HTTP auth uses auth-aware StreamableHTTP first and only falls back to SSE when the transport itself is incompatible. `401`/`403`, refresh failures, and other auth problems stay auth failures.
+- Legacy tokens from `~/.pi/agent/mcp-oauth/<server>/tokens.json` are imported into the durable auth store on first use when possible.
 
 ### Lifecycle Modes
 
@@ -172,7 +257,7 @@ Each direct tool costs ~150-300 tokens in the system prompt (name + description 
 
 Direct tools register from the metadata cache (`~/.pi/agent/mcp-cache.json`), so no server connections are needed at startup. On the first session after adding `directTools` to a new server, the cache won't exist yet — tools fall back to proxy-only and the cache populates in the background. Restart Pi and they'll be available. To force it: `/mcp reconnect <server>` then restart.
 
-**Interactive configuration:** Run `/mcp` to open an interactive panel showing all servers with connection status, tools, and direct/proxy toggles. You can reconnect servers, initiate OAuth, and toggle tools between direct and proxy — all from one overlay. Changes are written to your config file; restart Pi to apply.
+**Interactive configuration:** Run `/mcp` to open an interactive panel showing all servers with connection status, tools, and direct/proxy toggles. You can reconnect servers, intentionally start or retry auth for needs-auth servers with `Ctrl+R`, and toggle tools between direct and proxy — all from one overlay. `Ctrl+R` uses the same auth-aware reconnect path as `/mcp auth <server>`: system-browser `authorization_code` with a `127.0.0.1` callback when needed, non-interactive `client_credentials` when configured, and no surprise browser launches during background reconnects. Changes are written to your config file; restart Pi to apply.
 
 **Subagent integration:** If you use the subagent extension, agents can request direct MCP tools in their frontmatter with `mcp:server-name` syntax. See the subagent README for details.
 
@@ -272,11 +357,14 @@ Tool names are fuzzy-matched on hyphens and underscores — `context7_resolve_li
 
 | Command | What it does |
 |---------|--------------|
-| `/mcp` | Interactive panel (server status, tool toggles, reconnect) |
+| `/mcp` | Interactive panel (server status, tool toggles, reconnect/auth via `Ctrl+R`, auth notices) |
 | `/mcp tools` | List all tools |
 | `/mcp reconnect` | Reconnect all servers |
 | `/mcp reconnect <server>` | Connect or reconnect a single server |
-| `/mcp-auth <server>` | OAuth setup |
+| `/mcp auth` | Show OAuth status, flow, registration strategy, storage hints, and browser/no-browser behavior |
+| `/mcp auth <server>` | Intentionally start or retry auth for one OAuth-configured HTTP server (`authorization_code` browser flow or `client_credentials` token exchange) |
+| `/mcp-auth` | Compatibility launcher for `/mcp auth` |
+| `/mcp-auth <server>` | Compatibility launcher for `/mcp auth <server>` |
 
 ## How It Works
 
@@ -286,11 +374,27 @@ Tool names are fuzzy-matched on hyphens and underscores — `context7_resolve_li
 - Idle servers disconnect after 10 minutes (configurable), reconnect automatically on next use
 - npx-based servers resolve to direct binary paths, skipping the ~143 MB npm parent process
 - MCP server validates arguments, not the adapter
-- Keep-alive servers get health checks and auto-reconnect
+- Keep-alive servers get health checks and auto-reconnect, but browser-based reauth only happens on intentional retries
+- HTTP auth uses StreamableHTTP first and only falls back to SSE when the transport is incompatible, not when auth fails
+- Auth-aware fallback preserves `needs-auth` state instead of misclassifying `401`/`403`, refresh failures, or rejected browser flows as transport incompatibility
 - Specific tools can be promoted from the proxy to first-class Pi tools via `directTools` config, so the LLM sees them directly instead of having to search
 
 ## Limitations
 
-- OAuth tokens obtained externally (no browser flow)
-- No automatic token refresh
 - Cross-session server sharing not yet implemented (each Pi session runs its own server processes)
+- OAuth auth is only available for HTTP/SSE transports, not stdio-only servers
+- Interactive `authorization_code` currently requires your system browser and an auth provider that accepts a `127.0.0.1` loopback redirect; embedded/copy-paste auth is not supported
+- Background reconnects intentionally avoid surprise browser launches; if silent refresh is not possible, the server stays in a needs-auth state until you retry interactively
+
+## OAuth Troubleshooting
+
+| Symptom | What to do |
+|---------|------------|
+| Browser did not open during a reconnect | Expected for background reconnects. Run `/mcp auth <server>` (or `/mcp-auth <server>`) or highlight the server in `/mcp` and press `Ctrl+R` to start an intentional browser flow. |
+| Browser sign-in opened but never completed | Make sure the browser can reach a local callback on `127.0.0.1`, the auth server allows loopback redirects, and your system browser is the one completing the flow, then retry `/mcp auth <server>` (or `/mcp-auth <server>`). |
+| Provider rejects the redirect URI or callback | Confirm the provider allows `http://127.0.0.1:<port>/...` loopback redirects. Pi uses the system browser + loopback callback only; there is no manual copy/paste fallback. |
+| Server stays in `needs-auth` after a failed sign-in | Retry `/mcp auth <server>` (or `/mcp-auth <server>`). Cancelled, expired, rejected, or callback-failed browser attempts intentionally stay in `needs-auth` until you retry. |
+| `client_credentials` keeps failing | Check `clientId` / `clientSecret`, env var names, and any required `scope` or `resource` hints. Pi will not open a browser for this flow. |
+| `registration.mode: "auto"` picked the wrong strategy | Set `registration.mode` explicitly to `static`, `metadata-url`, or `dynamic`. The default order is static client info -> metadata URL/CIMD -> dynamic registration. |
+| You had old tokens under `~/.pi/agent/mcp-oauth/...` | They are imported into `~/.pi/agent/mcp-auth` on first use when possible. If migration cannot be used, rerun `/mcp auth <server>` (or `/mcp-auth <server>`) to establish fresh auth. |
+| An HTTP server reports auth errors | Treat it as auth, not transport selection. StreamableHTTP only falls back to SSE for transport incompatibility, not `401`/`403` or refresh failures. |

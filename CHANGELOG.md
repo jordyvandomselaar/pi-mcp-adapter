@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- OAuth auth now uses the SDK-backed HTTP flow for HTTP servers: `authorization_code` reuses stored credentials and silent refresh first, then opens the system browser and completes through a `127.0.0.1` loopback callback when user sign-in is still required.
+- Tokens, client registration, and callback session state now live in the durable store at `~/.pi/agent/mcp-auth`, so auth state survives restarts and can be reused without rerunning setup every session.
+- `/mcp auth`, `/mcp-auth`, `/mcp` panel notices, README guidance, and installer help now describe browser-vs-machine auth, loopback callback handling, no-surprise-browser background policy, and the preferred `/mcp auth` UX.
+- HTTP OAuth now supports both interactive `authorization_code` and non-interactive `client_credentials`, and `registration.mode: "auto"` prefers static client info, then client metadata URL/CIMD, then dynamic registration.
+- Background keep-alive and reconnect checks avoid browser launches, leave servers in a needs-auth state when interactive reauth is required, and treat `401`/`403`, refresh failures, and rejected browser auth as auth failures instead of StreamableHTTP -> SSE fallback signals.
+
+### Fixed
+- Legacy tokens under `~/.pi/agent/mcp-oauth/<server>/tokens.json` are imported into the durable auth store on first use when possible.
+- Removed stale docs/help references to the retired manual OAuth helper path, copy-paste token setup, and legacy `/mcp-auth` token-file instructions.
+
 ## [2.2.1] - 2026-03-23
 
 ### Fixed
@@ -179,7 +190,7 @@ mcp({ tool: "my_tool", args: '{"key": "value"}' })
 - **HTTP transport** with automatic fallback (StreamableHTTP → SSE)
 - **Config imports** from Cursor, Claude Code, Claude Desktop, VS Code, Windsurf, Codex
 - **Resource tools** - MCP resources exposed as callable tools
-- **OAuth support** - Token file-based authentication
+- **OAuth support** - Token file-based authentication (legacy in 1.0.0; replaced by the SDK-based flow described in Unreleased)
 - **Bearer token auth** - Static or environment variable tokens
 - **Keep-alive connections** with automatic health checks and reconnection
 - **Schema on-demand** - Parameter schemas shown in `describe` mode and error responses
@@ -187,7 +198,7 @@ mcp({ tool: "my_tool", args: '{"key": "value"}' })
   - `/mcp` or `/mcp status` - Show server status
   - `/mcp tools` - List all tools
   - `/mcp reconnect` - Force reconnect all servers
-  - `/mcp-auth <server>` - Show OAuth setup instructions
+  - `/mcp-auth <server>` - Show legacy OAuth setup instructions (legacy 1.0.0 behavior; current command starts or retries auth)
 
 ### Architecture
 

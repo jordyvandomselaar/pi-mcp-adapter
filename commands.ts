@@ -1,13 +1,334 @@
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { McpExtensionState } from "./state.js";
-import type { McpConfig, ServerEntry, McpPanelCallbacks, McpPanelResult } from "./types.js";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@mariozechner/pi-coding-agent";
+import type { AuthInteractionReason } from "./auth-provider.js";
+import {
+  clearServerNeedsAuth,
+  getServerNeedsAuth,
+  isNeedsAuthError,
+  markServerNeedsAuth,
+  serverNeedsAuth,
+  type McpExtensionState,
+} from "./state.js";
+import type {
+  McpPanelCallbacks,
+  McpPanelResult,
+  ResolvedOAuthAuthConfig,
+  ServerDefinition,
+} from "./types.js";
+import {
+  getDefaultOAuthAuthConfig,
+  getServerAuthType,
+  isPotentiallyOAuthHttpServer,
+  usesClientCredentialsOAuth,
+  usesInteractiveOAuth,
+} from "./types.js";
+import {
+  AuthSessionCancelledError,
+  AuthSessionError,
+  AuthSessionExpiredError,
+  InvalidAuthCallbackError,
+} from "./auth-session-manager.js";
 import { getServerProvenance, writeDirectToolsConfig } from "./config.js";
-import { lazyConnect, updateMetadataCache, updateStatusBar, getFailureAgeSeconds } from "./init.js";
+import {
+  updateMetadataCache,
+  updateStatusBar,
+  getFailureAgeSeconds,
+} from "./init.js";
 import { loadMetadataCache } from "./metadata-cache.js";
-import { getStoredTokens } from "./oauth-handler.js";
+import { getStoredTokens } from "./auth-store.js";
+import { getCurrentAuthModeLabel, resolveRuntimeOAuthConfig } from "./oauth-runtime.js";
 import { buildToolMetadata } from "./tool-metadata.js";
 
-export async function showStatus(state: McpExtensionState, ctx: ExtensionContext): Promise<void> {
+interface ManagedConnectOptions {
+  interactiveAllowed?: boolean;
+  interactionReason?: AuthInteractionReason;
+}
+
+function connectWithPolicy(
+  state: McpExtensionState,
+  serverName: string,
+  definition: ServerDefinition,
+  options?: ManagedConnectOptions,
+): Promise<Awaited<ReturnType<McpExtensionState["manager"]["connect"]>>> {
+  const managed = state.manager as unknown as {
+    connect: (
+      name: string,
+      serverDefinition: ServerDefinition,
+      connectOptions?: ManagedConnectOptions,
+    ) => Promise<Awaited<ReturnType<McpExtensionState["manager"]["connect"]>>>;
+  };
+
+  return managed.connect(serverName, definition, options);
+}
+
+interface IntentionalReconnectResult {
+  connected: boolean;
+  failedTools: number;
+  message: string;
+  level: "info" | "warning" | "error";
+}
+
+function describeOAuthClient(auth: ResolvedOAuthAuthConfig): string {
+  const information = auth.client?.information;
+  if (information) {
+    if (information.clientId) {
+      return `static client information (${information.clientId})`;
+    }
+
+    if (information.clientIdEnv) {
+      return `static client information (clientId from $${information.clientIdEnv})`;
+    }
+
+    return "static client information (credentials configured)";
+  }
+
+  if (auth.client?.metadataUrl) {
+    return `client metadata URL (${auth.client.metadataUrl})`;
+  }
+
+  if (auth.client?.metadata) {
+    return "inline client metadata";
+  }
+
+  return "SDK-managed registration defaults";
+}
+
+function describeRegistrationMode(auth: ResolvedOAuthAuthConfig): string {
+  switch (auth.registration.mode) {
+    case "auto":
+      return "auto (static client info -> metadata URL/CIMD -> dynamic registration)";
+    case "metadata-url":
+      return auth.client?.metadataUrl
+        ? `metadata-url (${auth.client.metadataUrl})`
+        : "metadata-url";
+    default:
+      return auth.registration.mode;
+  }
+}
+
+function buildAuthBehaviorFooterLines(): string[] {
+  return [
+    "Behavior:",
+    "  authorization_code reuses stored tokens and silent refresh first, then uses the system browser with a 127.0.0.1 loopback callback, PKCE, and single-use state validation if sign-in is still required.",
+    "  Pi stores tokens, client registration, and callback session state under ~/.pi/agent/mcp-auth.",
+    "  registration.mode=auto prefers static client info, then metadata URL/CIMD, then dynamic registration.",
+    "  client_credentials stays non-interactive and can reuse durable auth state without opening a browser.",
+    "  Background reconnects and keep-alive health checks never open a browser; Pi leaves the server in needs-auth until you retry intentionally.",
+    "  HTTP auth failures stay auth failures; StreamableHTTP only falls back to SSE when the transport is incompatible.",
+  ];
+}
+
+function getStoredTokenAvailability(
+  serverName: string,
+  definition: ServerDefinition,
+): { hasUsableAccessToken: boolean; hasRefreshToken: boolean } {
+  const usableTokens = getStoredTokens(serverName, definition);
+  const storedTokens = getStoredTokens(serverName, definition, undefined, {
+    includeExpired: true,
+  });
+
+  return {
+    hasUsableAccessToken: usableTokens !== undefined,
+    hasRefreshToken: Boolean(storedTokens?.refresh_token),
+  };
+}
+
+function getAuthStatusSummary(
+  state: McpExtensionState,
+  serverName: string,
+  definition: ServerDefinition,
+  auth: ResolvedOAuthAuthConfig,
+): { summary: string; note?: string } {
+  const requirement = getServerNeedsAuth(state, serverName);
+  const connection = state.manager.getConnection(serverName);
+  const tokenAvailability = getStoredTokenAvailability(serverName, definition);
+
+  if (connection?.status === "connected") {
+    return { summary: "connected" };
+  }
+
+  if (requirement) {
+    return {
+      summary: auth.grantType === "client_credentials"
+        ? "authentication required"
+        : "browser sign-in required",
+      note: requirement.message,
+    };
+  }
+
+  if (auth.grantType === "authorization_code") {
+    return {
+      summary: tokenAvailability.hasUsableAccessToken
+        ? "stored tokens available"
+        : tokenAvailability.hasRefreshToken
+          ? "stored refresh token available"
+          : "browser sign-in required",
+    };
+  }
+
+  if (auth.grantType === "client_credentials") {
+    return {
+      summary: tokenAvailability.hasUsableAccessToken
+        ? "cached machine token available"
+        : "ready for non-interactive token exchange",
+    };
+  }
+
+  return { summary: "ready" };
+}
+
+function buildAuthSummaryLines(
+  state: McpExtensionState,
+  serverName: string,
+  definition: ServerDefinition,
+  auth: ResolvedOAuthAuthConfig,
+): string[] {
+  const status = getAuthStatusSummary(state, serverName, definition, auth);
+  const lines = [
+    `${serverName}: ${status.summary}`,
+    `  flow: ${auth.grantType}`,
+    `  registration: ${describeRegistrationMode(auth)}`,
+    `  client: ${describeOAuthClient(auth)}`,
+  ];
+
+  if (status.note) {
+    lines.push(`  last issue: ${status.note}`);
+  }
+
+  return lines;
+}
+
+export async function showAuthOverview(
+  state: McpExtensionState,
+  ctx: ExtensionContext,
+): Promise<void> {
+  if (!ctx.hasUI) return;
+
+  const entries = await Promise.all(
+    Object.entries(state.config.mcpServers).map(async ([serverName, definition]) => {
+      const auth = await resolveRuntimeOAuthConfig(serverName, definition);
+      return auth ? { serverName, definition, auth } : undefined;
+    }),
+  );
+  const oauthEntries = entries.filter((entry): entry is {
+    serverName: string;
+    definition: ServerDefinition;
+    auth: ResolvedOAuthAuthConfig;
+  } => entry !== undefined);
+
+  if (oauthEntries.length === 0) {
+    ctx.ui.notify("No OAuth-authenticated MCP servers are configured.", "info");
+    return;
+  }
+
+  const lines = ["MCP Auth:", ""];
+  for (const entry of oauthEntries) {
+    lines.push(...buildAuthSummaryLines(state, entry.serverName, entry.definition, entry.auth), "");
+  }
+  lines.push(...buildAuthBehaviorFooterLines(), "");
+  lines.push(
+    "Use /mcp auth (or /mcp-auth) to show this summary again, or /mcp auth <server> to start or retry authentication for a specific server.",
+  );
+
+  ctx.ui.notify(lines.join("\n"), "info");
+}
+
+function summarizeAuthSessionFailure(
+  serverName: string,
+  error: AuthSessionError,
+): string {
+  if (error instanceof AuthSessionCancelledError) {
+    return `MCP: Browser sign-in for "${serverName}" was cancelled. Press Ctrl+R or run /mcp auth ${serverName} (or /mcp-auth ${serverName}) to try again.`;
+  }
+
+  if (error instanceof AuthSessionExpiredError) {
+    return `MCP: Browser sign-in for "${serverName}" expired before completion. Press Ctrl+R or run /mcp auth ${serverName} (or /mcp-auth ${serverName}) to try again.`;
+  }
+
+  if (error instanceof InvalidAuthCallbackError) {
+    return `MCP: Browser sign-in callback for "${serverName}" did not complete successfully. Confirm the auth server allows the 127.0.0.1 callback, then press Ctrl+R or run /mcp auth ${serverName} (or /mcp-auth ${serverName}) to try again.`;
+  }
+
+  return `MCP: Browser sign-in for "${serverName}" did not complete. Press Ctrl+R or run /mcp auth ${serverName} (or /mcp-auth ${serverName}) to try again.`;
+}
+
+async function reconnectServerWithUserIntent(
+  state: McpExtensionState,
+  serverName: string,
+  definition: ServerDefinition,
+): Promise<IntentionalReconnectResult> {
+  await state.manager.close(serverName);
+
+  try {
+    const connection = await connectWithPolicy(state, serverName, definition, {
+      interactiveAllowed: true,
+      interactionReason: "user",
+    });
+    const prefix = state.config.settings?.toolPrefix ?? "server";
+
+    clearServerNeedsAuth(state, serverName);
+    const { metadata, failedTools } = buildToolMetadata(
+      connection.tools,
+      connection.resources,
+      definition,
+      serverName,
+      prefix,
+    );
+    state.toolMetadata.set(serverName, metadata);
+    updateMetadataCache(state, serverName);
+    state.failureTracker.delete(serverName);
+
+    return {
+      connected: true,
+      failedTools: failedTools.length,
+      message: `MCP: Reconnected to ${serverName} (${connection.tools.length} tools, ${connection.resources.length} resources)`,
+      level: "info",
+    };
+  } catch (error) {
+    if (error instanceof AuthSessionError) {
+      const message = summarizeAuthSessionFailure(serverName, error);
+      state.failureTracker.delete(serverName);
+      markServerNeedsAuth(state, serverName, { reason: "user", message });
+      return {
+        connected: false,
+        failedTools: 0,
+        message,
+        level: "warning",
+      };
+    }
+
+    if (isNeedsAuthError(error)) {
+      state.failureTracker.delete(serverName);
+      markServerNeedsAuth(state, serverName, {
+        error,
+        reason: "user",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        connected: false,
+        failedTools: 0,
+        message: `MCP: ${serverName} needs authentication. Continue or restart the browser sign-in flow, then retry.`,
+        level: "warning",
+      };
+    }
+
+    const message = error instanceof Error ? error.message : String(error);
+    state.failureTracker.set(serverName, Date.now());
+    return {
+      connected: false,
+      failedTools: 0,
+      message: `MCP: Failed to reconnect to ${serverName}: ${message}`,
+      level: "error",
+    };
+  }
+}
+
+export async function showStatus(
+  state: McpExtensionState,
+  ctx: ExtensionContext,
+): Promise<void> {
   if (!ctx.hasUI) return;
 
   const lines: string[] = ["MCP Server Status:", ""];
@@ -24,6 +345,9 @@ export async function showStatus(state: McpExtensionState, ctx: ExtensionContext
     if (connection?.status === "connected") {
       status = "connected";
       statusIcon = "✓";
+    } else if (serverNeedsAuth(state, name)) {
+      status = "needs auth";
+      statusIcon = "!";
     } else if (failedAgo !== null) {
       status = `failed ${failedAgo}s ago`;
       statusIcon = "✗";
@@ -32,7 +356,9 @@ export async function showStatus(state: McpExtensionState, ctx: ExtensionContext
       status = "cached";
     }
 
-    const toolSuffix = failed ? "" : ` (${toolCount} tools${status === "cached" ? ", cached" : ""})`;
+    const toolSuffix = failed
+      ? ""
+      : ` (${toolCount} tools${status === "cached" ? ", cached" : ""})`;
     lines.push(`${statusIcon} ${name}: ${status}${toolSuffix}`);
   }
 
@@ -43,10 +369,13 @@ export async function showStatus(state: McpExtensionState, ctx: ExtensionContext
   ctx.ui.notify(lines.join("\n"), "info");
 }
 
-export async function showTools(state: McpExtensionState, ctx: ExtensionContext): Promise<void> {
+export async function showTools(
+  state: McpExtensionState,
+  ctx: ExtensionContext,
+): Promise<void> {
   if (!ctx.hasUI) return;
 
-  const allTools = [...state.toolMetadata.values()].flat().map(m => m.name);
+  const allTools = [...state.toolMetadata.values()].flat().map((m) => m.name);
 
   if (allTools.length === 0) {
     ctx.ui.notify("No MCP tools available", "info");
@@ -56,7 +385,7 @@ export async function showTools(state: McpExtensionState, ctx: ExtensionContext)
   const lines = [
     "MCP Tools:",
     "",
-    ...allTools.map(t => `  ${t}`),
+    ...allTools.map((t) => `  ${t}`),
     "",
     `Total: ${allTools.length} tools`,
   ];
@@ -67,7 +396,7 @@ export async function showTools(state: McpExtensionState, ctx: ExtensionContext)
 export async function reconnectServers(
   state: McpExtensionState,
   ctx: ExtensionContext,
-  targetServer?: string
+  targetServer?: string,
 ): Promise<void> {
   if (targetServer && !state.config.mcpServers[targetServer]) {
     if (ctx.hasUI) {
@@ -77,35 +406,24 @@ export async function reconnectServers(
   }
 
   const entries = targetServer
-    ? [[targetServer, state.config.mcpServers[targetServer]] as [string, ServerEntry]]
+    ? [
+        [targetServer, state.config.mcpServers[targetServer]] as [
+          string,
+          ServerDefinition,
+        ],
+      ]
     : Object.entries(state.config.mcpServers);
 
   for (const [name, definition] of entries) {
-    try {
-      await state.manager.close(name);
+    const result = await reconnectServerWithUserIntent(state, name, definition);
 
-      const connection = await state.manager.connect(name, definition);
-      const prefix = state.config.settings?.toolPrefix ?? "server";
-
-      const { metadata, failedTools } = buildToolMetadata(connection.tools, connection.resources, definition, name, prefix);
-      state.toolMetadata.set(name, metadata);
-      updateMetadataCache(state, name);
-      state.failureTracker.delete(name);
-
-      if (ctx.hasUI) {
+    if (ctx.hasUI) {
+      ctx.ui.notify(result.message, result.level);
+      if (result.connected && result.failedTools > 0) {
         ctx.ui.notify(
-          `MCP: Reconnected to ${name} (${connection.tools.length} tools, ${connection.resources.length} resources)`,
-          "info"
+          `MCP: ${name} - ${result.failedTools} tools skipped`,
+          "warning",
         );
-        if (failedTools.length > 0) {
-          ctx.ui.notify(`MCP: ${name} - ${failedTools.length} tools skipped`, "warning");
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      state.failureTracker.set(name, Date.now());
-      if (ctx.hasUI) {
-        ctx.ui.notify(`MCP: Failed to reconnect to ${name}: ${message}`, "error");
       }
     }
   }
@@ -114,23 +432,27 @@ export async function reconnectServers(
 }
 
 export async function authenticateServer(
+  state: McpExtensionState,
   serverName: string,
-  config: McpConfig,
-  ctx: ExtensionContext
+  ctx: ExtensionContext,
 ): Promise<void> {
   if (!ctx.hasUI) return;
 
-  const definition = config.mcpServers[serverName];
+  const definition = state.config.mcpServers[serverName];
   if (!definition) {
     ctx.ui.notify(`Server "${serverName}" not found in config`, "error");
     return;
   }
 
-  if (definition.auth !== "oauth") {
+  const authType = getServerAuthType(definition);
+  const auth = await resolveRuntimeOAuthConfig(serverName, definition)
+    ?? (isPotentiallyOAuthHttpServer(definition) ? getDefaultOAuthAuthConfig() : undefined);
+
+  if (!auth) {
     ctx.ui.notify(
       `Server "${serverName}" does not use OAuth authentication.\n` +
-      `Current auth mode: ${definition.auth ?? "none"}`,
-      "error"
+        `Current auth mode: ${authType ?? getCurrentAuthModeLabel(definition)}`,
+      "error",
     );
     return;
   }
@@ -138,26 +460,55 @@ export async function authenticateServer(
   if (!definition.url) {
     ctx.ui.notify(
       `Server "${serverName}" has no URL configured (OAuth requires HTTP transport)`,
-      "error"
+      "error",
     );
     return;
   }
 
-  const tokenPath = `~/.pi/agent/mcp-oauth/${serverName}/tokens.json`;
+  const introLines = [
+    `MCP auth for "${serverName}":`,
+    ...buildAuthSummaryLines(state, serverName, definition, auth),
+    "",
+    auth.grantType === "authorization_code"
+      ? "Starting browser-based authorization_code auth. Pi reuses stored tokens and silent refresh first; if sign-in is still required, it opens your system browser and waits for the 127.0.0.1 loopback callback."
+      : "Starting non-interactive client_credentials auth. No browser will open; Pi will request a token with the configured client credentials and reuse durable auth state when possible.",
+    "Pi stores tokens, client registration, and callback session state under ~/.pi/agent/mcp-auth.",
+    "Background reconnects never open a browser; Pi only launches auth on an intentional retry.",
+    "HTTP auth failures stay auth failures; StreamableHTTP only falls back to SSE when the transport itself is incompatible.",
+  ];
 
-  ctx.ui.notify(
-    `OAuth setup for "${serverName}":\n\n` +
-    `1. Obtain an access token from your OAuth provider\n` +
-    `2. Create the token file:\n` +
-    `   ${tokenPath}\n\n` +
-    `3. Add your token:\n` +
-    `   {\n` +
-    `     "access_token": "your-token-here",\n` +
-    `     "token_type": "bearer"\n` +
-    `   }\n\n` +
-    `4. Run /mcp reconnect to connect with the token`,
-    "info"
+  if (definition.auth === "oauth") {
+    introLines.push(
+      'Compatibility note: legacy auth: "oauth" config defaults to authorization_code with automatic registration.',
+    );
+  }
+
+  ctx.ui.notify(introLines.join("\n"), "info");
+
+  const result = await reconnectServerWithUserIntent(
+    state,
+    serverName,
+    definition,
   );
+  updateStatusBar(state);
+  ctx.ui.notify(result.message, result.level);
+  if (result.connected && result.failedTools > 0) {
+    ctx.ui.notify(
+      `MCP: ${serverName} - ${result.failedTools} tools skipped`,
+      "warning",
+    );
+  }
+
+  if (
+    auth.grantType === "client_credentials" &&
+    !result.connected &&
+    !serverNeedsAuth(state, serverName)
+  ) {
+    ctx.ui.notify(
+      `MCP: ${serverName} uses client_credentials, so retries remain non-interactive. Check the configured client credentials or token endpoint settings.`,
+      "warning",
+    );
+  }
 }
 
 export async function openMcpPanel(
@@ -168,19 +519,48 @@ export async function openMcpPanel(
 ): Promise<void> {
   const config = state.config;
   const cache = loadMetadataCache();
-  const provenanceMap = getServerProvenance(pi.getFlag("mcp-config") as string | undefined ?? configOverridePath);
+  const provenanceMap = getServerProvenance(
+    (pi.getFlag("mcp-config") as string | undefined) ?? configOverridePath,
+  );
 
   const callbacks: McpPanelCallbacks = {
     reconnect: async (serverName: string) => {
-      return lazyConnect(state, serverName);
+      const definition = config.mcpServers[serverName];
+      if (!definition) {
+        if (ctx.hasUI) {
+          ctx.ui.notify(`Server "${serverName}" not found in config`, "error");
+        }
+        return false;
+      }
+
+      const result = await reconnectServerWithUserIntent(
+        state,
+        serverName,
+        definition,
+      );
+      updateStatusBar(state);
+      if (ctx.hasUI) {
+        ctx.ui.notify(result.message, result.level);
+        if (result.connected && result.failedTools > 0) {
+          ctx.ui.notify(
+            `MCP: ${serverName} - ${result.failedTools} tools skipped`,
+            "warning",
+          );
+        }
+      }
+      return result.connected;
     },
     getConnectionStatus: (serverName: string) => {
       const definition = config.mcpServers[serverName];
-      if (definition?.auth === "oauth" && getStoredTokens(serverName) === undefined) {
-        return "needs-auth";
-      }
       const connection = state.manager.getConnection(serverName);
       if (connection?.status === "connected") return "connected";
+      if (serverNeedsAuth(state, serverName)) return "needs-auth";
+      if (usesInteractiveOAuth(definition)) {
+        const tokenAvailability = getStoredTokenAvailability(serverName, definition);
+        if (!tokenAvailability.hasUsableAccessToken && !tokenAvailability.hasRefreshToken) {
+          return "needs-auth";
+        }
+      }
       if (getFailureAgeSeconds(state, serverName) !== null) return "failed";
       return "idle";
     },
@@ -195,14 +575,24 @@ export async function openMcpPanel(
   return new Promise<void>((resolve) => {
     ctx.ui.custom(
       (tui, _theme, _keybindings, done) => {
-        return createMcpPanel(config, cache, provenanceMap, callbacks, tui, (result: McpPanelResult) => {
-          if (!result.cancelled && result.changes.size > 0) {
-            writeDirectToolsConfig(result.changes, provenanceMap, config);
-            ctx.ui.notify("Direct tools updated. Restart pi to apply.", "info");
-          }
-          done();
-          resolve();
-        });
+        return createMcpPanel(
+          config,
+          cache,
+          provenanceMap,
+          callbacks,
+          tui,
+          (result: McpPanelResult) => {
+            if (!result.cancelled && result.changes.size > 0) {
+              writeDirectToolsConfig(result.changes, provenanceMap, config);
+              ctx.ui.notify(
+                "Direct tools updated. Restart pi to apply.",
+                "info",
+              );
+            }
+            done();
+            resolve();
+          },
+        );
       },
       { overlay: true, overlayOptions: { anchor: "center", width: 82 } },
     );

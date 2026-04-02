@@ -1,9 +1,28 @@
 import type { AgentToolResult, ToolInfo } from "@mariozechner/pi-coding-agent";
-import type { McpExtensionState } from "./state.js";
+import {
+  clearServerNeedsAuth,
+  getNeedsAuthMessage,
+  getServerNeedsAuth,
+  isNeedsAuthError,
+  markServerNeedsAuth,
+  serverNeedsAuth,
+  type McpExtensionState,
+} from "./state.js";
 import type { ToolMetadata, McpContent } from "./types.js";
 import { getServerPrefix, parseUiPromptHandoff } from "./types.js";
-import { lazyConnect, updateServerMetadata, updateMetadataCache, getFailureAgeSeconds, updateStatusBar } from "./init.js";
-import { buildToolMetadata, getToolNames, findToolByName, formatSchema } from "./tool-metadata.js";
+import {
+  lazyConnect,
+  updateServerMetadata,
+  updateMetadataCache,
+  getFailureAgeSeconds,
+  updateStatusBar,
+} from "./init.js";
+import {
+  buildToolMetadata,
+  getToolNames,
+  findToolByName,
+  formatSchema,
+} from "./tool-metadata.js";
 import { transformMcpContent } from "./tool-registrar.js";
 import { maybeStartUiSession, type UiSessionRuntime } from "./ui-session.js";
 import { truncateAtWord } from "./utils.js";
@@ -15,21 +34,31 @@ export function executeUiMessages(state: McpExtensionState): ProxyToolResult {
 
   if (sessions.length === 0) {
     return {
-      content: [{ type: "text" as const, text: "No UI session messages available." }],
+      content: [
+        { type: "text" as const, text: "No UI session messages available." },
+      ],
       details: { sessions: 0 },
     };
   }
 
   const output: string[] = [];
-  output.push(`UI Session Messages (${sessions.length} session${sessions.length > 1 ? "s" : ""}):\n`);
+  output.push(
+    `UI Session Messages (${sessions.length} session${sessions.length > 1 ? "s" : ""}):\n`,
+  );
 
   const allPrompts: string[] = [];
   const allIntents = sessions.flatMap((session) => session.messages.intents);
-  const parsedHandoffs: Array<{ intent: string; params: Record<string, unknown>; raw: string }> = [];
+  const parsedHandoffs: Array<{
+    intent: string;
+    params: Record<string, unknown>;
+    raw: string;
+  }> = [];
 
   for (const session of sessions) {
     const timestamp = session.completedAt.toLocaleTimeString();
-    output.push(`\n## ${session.serverName} / ${session.toolName} (${timestamp}, ${session.reason})`);
+    output.push(
+      `\n## ${session.serverName} / ${session.toolName} (${timestamp}, ${session.reason})`,
+    );
 
     const plainPrompts: string[] = [];
     for (const prompt of session.messages.prompts) {
@@ -60,7 +89,9 @@ export function executeUiMessages(state: McpExtensionState): ProxyToolResult {
     if (intentsForSession.length > 0) {
       output.push("\n### Intents:");
       for (const intent of intentsForSession) {
-        const params = intent.params ? ` (${JSON.stringify(intent.params)})` : "";
+        const params = intent.params
+          ? ` (${JSON.stringify(intent.params)})`
+          : "";
         output.push(`- ${intent.intent}${params}`);
       }
     }
@@ -81,7 +112,10 @@ export function executeUiMessages(state: McpExtensionState): ProxyToolResult {
     details: {
       sessions: count,
       prompts: allPrompts,
-      intents: [...allIntents, ...parsedHandoffs.map(({ intent, params }) => ({ intent, params }))],
+      intents: [
+        ...allIntents,
+        ...parsedHandoffs.map(({ intent, params }) => ({ intent, params })),
+      ],
       handoffs: parsedHandoffs,
       cleared: true,
     },
@@ -89,7 +123,12 @@ export function executeUiMessages(state: McpExtensionState): ProxyToolResult {
 }
 
 export function executeStatus(state: McpExtensionState): ProxyToolResult {
-  const servers: Array<{ name: string; status: string; toolCount: number; failedAgo: number | null }> = [];
+  const servers: Array<{
+    name: string;
+    status: string;
+    toolCount: number;
+    failedAgo: number | null;
+  }> = [];
 
   for (const name of Object.keys(state.config.mcpServers)) {
     const connection = state.manager.getConnection(name);
@@ -99,6 +138,8 @@ export function executeStatus(state: McpExtensionState): ProxyToolResult {
     let status = "not connected";
     if (connection?.status === "connected") {
       status = "connected";
+    } else if (serverNeedsAuth(state, name)) {
+      status = "needs-auth";
     } else if (failedAgo !== null) {
       status = "failed";
     } else if (metadata !== undefined) {
@@ -109,7 +150,7 @@ export function executeStatus(state: McpExtensionState): ProxyToolResult {
   }
 
   const totalTools = servers.reduce((sum, s) => sum + s.toolCount, 0);
-  const connectedCount = servers.filter(s => s.status === "connected").length;
+  const connectedCount = servers.filter((s) => s.status === "connected").length;
 
   let text = `MCP: ${connectedCount}/${servers.length} servers, ${totalTools} tools\n\n`;
   for (const server of servers) {
@@ -119,6 +160,10 @@ export function executeStatus(state: McpExtensionState): ProxyToolResult {
     }
     if (server.status === "cached") {
       text += `○ ${server.name} (${server.toolCount} tools, cached)\n`;
+      continue;
+    }
+    if (server.status === "needs-auth") {
+      text += `! ${server.name} (needs authentication)\n`;
       continue;
     }
     if (server.status === "failed") {
@@ -138,7 +183,10 @@ export function executeStatus(state: McpExtensionState): ProxyToolResult {
   };
 }
 
-export function executeDescribe(state: McpExtensionState, toolName: string): ProxyToolResult {
+export function executeDescribe(
+  state: McpExtensionState,
+  toolName: string,
+): ProxyToolResult {
   let serverName: string | undefined;
   let toolMeta: ToolMetadata | undefined;
 
@@ -153,8 +201,17 @@ export function executeDescribe(state: McpExtensionState, toolName: string): Pro
 
   if (!serverName || !toolMeta) {
     return {
-      content: [{ type: "text" as const, text: `Tool "${toolName}" not found. Use mcp({ search: "..." }) to search.` }],
-      details: { mode: "describe", error: "tool_not_found", requestedTool: toolName },
+      content: [
+        {
+          type: "text" as const,
+          text: `Tool "${toolName}" not found. Use mcp({ search: "..." }) to search.`,
+        },
+      ],
+      details: {
+        mode: "describe",
+        error: "tool_not_found",
+        requestedTool: toolName,
+      },
     };
   }
 
@@ -185,7 +242,7 @@ export function executeSearch(
   regex?: boolean,
   server?: string,
   includeSchemas?: boolean,
-  getPiTools?: () => ToolInfo[]
+  getPiTools?: () => ToolInfo[],
 ): ProxyToolResult {
   const showSchemas = includeSchemas !== false;
 
@@ -196,14 +253,21 @@ export function executeSearch(
     if (regex) {
       pattern = new RegExp(query, "i");
     } else {
-      const terms = query.trim().split(/\s+/).filter(t => t.length > 0);
+      const terms = query
+        .trim()
+        .split(/\s+/)
+        .filter((t) => t.length > 0);
       if (terms.length === 0) {
         return {
-          content: [{ type: "text" as const, text: "Search query cannot be empty" }],
+          content: [
+            { type: "text" as const, text: "Search query cannot be empty" },
+          ],
           details: { mode: "search", error: "empty_query" },
         };
       }
-      const escaped = terms.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      const escaped = terms.map((t) =>
+        t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+      );
       pattern = new RegExp(escaped.join("|"), "i");
     }
   } catch {
@@ -293,8 +357,8 @@ export function executeSearch(
     details: {
       mode: "search",
       matches: [
-        ...piMatches.map(m => ({ server: "pi", tool: m.name })),
-        ...matches.map(m => ({ server: m.server, tool: m.tool.name })),
+        ...piMatches.map((m) => ({ server: "pi", tool: m.name })),
+        ...matches.map((m) => ({ server: m.server, tool: m.tool.name })),
       ],
       count: totalCount,
       query,
@@ -302,38 +366,71 @@ export function executeSearch(
   };
 }
 
-export function executeList(state: McpExtensionState, server: string): ProxyToolResult {
+export function executeList(
+  state: McpExtensionState,
+  server: string,
+): ProxyToolResult {
   if (!state.config.mcpServers[server]) {
     return {
-      content: [{ type: "text" as const, text: `Server "${server}" not found. Use mcp({}) to see available servers.` }],
-      details: { mode: "list", server, tools: [], count: 0, error: "not_found" },
+      content: [
+        {
+          type: "text" as const,
+          text: `Server "${server}" not found. Use mcp({}) to see available servers.`,
+        },
+      ],
+      details: {
+        mode: "list",
+        server,
+        tools: [],
+        count: 0,
+        error: "not_found",
+      },
     };
   }
 
   const metadata = state.toolMetadata.get(server);
-  const toolNames = metadata?.map(m => m.name) ?? [];
+  const toolNames = metadata?.map((m) => m.name) ?? [];
   const connection = state.manager.getConnection(server);
 
   if (toolNames.length === 0) {
     if (connection?.status === "connected") {
       return {
-        content: [{ type: "text" as const, text: `Server "${server}" has no tools.` }],
+        content: [
+          { type: "text" as const, text: `Server "${server}" has no tools.` },
+        ],
         details: { mode: "list", server, tools: [], count: 0 },
       };
     }
     if (metadata !== undefined) {
       return {
-        content: [{ type: "text" as const, text: `Server "${server}" has no cached tools (not connected).` }],
+        content: [
+          {
+            type: "text" as const,
+            text: `Server "${server}" has no cached tools (not connected).`,
+          },
+        ],
         details: { mode: "list", server, tools: [], count: 0, cached: true },
       };
     }
     return {
-      content: [{ type: "text" as const, text: `Server "${server}" is configured but not connected. Use mcp({ connect: "${server}" }) or /mcp reconnect ${server} to retry.` }],
-      details: { mode: "list", server, tools: [], count: 0, error: "not_connected" },
+      content: [
+        {
+          type: "text" as const,
+          text: `Server "${server}" is configured but not connected. Use mcp({ connect: "${server}" }) or /mcp reconnect ${server} to retry.`,
+        },
+      ],
+      details: {
+        mode: "list",
+        server,
+        tools: [],
+        count: 0,
+        error: "not_connected",
+      },
     };
   }
 
-  const cachedNote = connection?.status === "connected" ? "" : " (not connected, cached)";
+  const cachedNote =
+    connection?.status === "connected" ? "" : " (not connected, cached)";
   let text = `${server} (${toolNames.length} tools${cachedNote}):\n\n`;
 
   const descMap = new Map<string, string>();
@@ -353,15 +450,28 @@ export function executeList(state: McpExtensionState, server: string): ProxyTool
 
   return {
     content: [{ type: "text" as const, text: text.trim() }],
-    details: { mode: "list", server, tools: toolNames, count: toolNames.length },
+    details: {
+      mode: "list",
+      server,
+      tools: toolNames,
+      count: toolNames.length,
+    },
   };
 }
 
-export async function executeConnect(state: McpExtensionState, serverName: string): Promise<ProxyToolResult> {
+export async function executeConnect(
+  state: McpExtensionState,
+  serverName: string,
+): Promise<ProxyToolResult> {
   const definition = state.config.mcpServers[serverName];
   if (!definition) {
     return {
-      content: [{ type: "text" as const, text: `Server "${serverName}" not found. Use mcp({}) to see available servers.` }],
+      content: [
+        {
+          type: "text" as const,
+          text: `Server "${serverName}" not found. Use mcp({}) to see available servers.`,
+        },
+      ],
       details: { mode: "connect", error: "not_found", server: serverName },
     };
   }
@@ -370,21 +480,66 @@ export async function executeConnect(state: McpExtensionState, serverName: strin
     if (state.ui) {
       state.ui.setStatus("mcp", `MCP: connecting to ${serverName}...`);
     }
-    const connection = await state.manager.connect(serverName, definition);
+    const connection = await state.manager.connect(serverName, definition, {
+      interactiveAllowed: true,
+      interactionReason: "user",
+    });
     const prefix = state.config.settings?.toolPrefix ?? "server";
-    const { metadata } = buildToolMetadata(connection.tools, connection.resources, definition, serverName, prefix);
+    const { metadata } = buildToolMetadata(
+      connection.tools,
+      connection.resources,
+      definition,
+      serverName,
+      prefix,
+    );
     state.toolMetadata.set(serverName, metadata);
+    clearServerNeedsAuth(state, serverName);
     updateMetadataCache(state, serverName);
     state.failureTracker.delete(serverName);
     updateStatusBar(state);
     return executeList(state, serverName);
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isNeedsAuthError(error)) {
+      const needsAuthMessage = getNeedsAuthMessage(error, serverName, message);
+      state.failureTracker.delete(serverName);
+      markServerNeedsAuth(state, serverName, {
+        error,
+        reason: "user",
+        message: needsAuthMessage,
+      });
+      updateStatusBar(state);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Server "${serverName}" needs authentication. Complete the browser flow and retry.`,
+          },
+        ],
+        details: {
+          mode: "connect",
+          error: "needs_auth",
+          server: serverName,
+          message: needsAuthMessage,
+        },
+      };
+    }
+
     state.failureTracker.set(serverName, Date.now());
     updateStatusBar(state);
-    const message = error instanceof Error ? error.message : String(error);
     return {
-      content: [{ type: "text" as const, text: `Failed to connect to "${serverName}": ${message}` }],
-      details: { mode: "connect", error: "connect_failed", server: serverName, message },
+      content: [
+        {
+          type: "text" as const,
+          text: `Failed to connect to "${serverName}": ${message}`,
+        },
+      ],
+      details: {
+        mode: "connect",
+        error: "connect_failed",
+        server: serverName,
+        message,
+      },
     };
   }
 }
@@ -401,7 +556,12 @@ export async function executeCall(
 
   if (serverName && !state.config.mcpServers[serverName]) {
     return {
-      content: [{ type: "text" as const, text: `Server "${serverName}" not found. Use mcp({}) to see available servers.` }],
+      content: [
+        {
+          type: "text" as const,
+          text: `Server "${serverName}" not found. Use mcp({}) to see available servers.`,
+        },
+      ],
       details: { mode: "call", error: "server_not_found", server: serverName },
     };
   }
@@ -424,31 +584,70 @@ export async function executeCall(
     if (connected) {
       toolMeta = findToolByName(state.toolMetadata.get(serverName), toolName);
     } else {
+      const authRequirement = getServerNeedsAuth(state, serverName);
+      if (authRequirement) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Server "${serverName}" needs authentication. Complete the browser flow and retry.`,
+            },
+          ],
+          details: {
+            mode: "call",
+            error: "needs_auth",
+            server: serverName,
+            message: authRequirement.message,
+          },
+        };
+      }
+
       const failedAgo = getFailureAgeSeconds(state, serverName);
       if (failedAgo !== null) {
         return {
-          content: [{ type: "text" as const, text: `Server "${serverName}" not available (last failed ${failedAgo}s ago)` }],
-          details: { mode: "call", error: "server_backoff", server: serverName },
+          content: [
+            {
+              type: "text" as const,
+              text: `Server "${serverName}" not available (last failed ${failedAgo}s ago)`,
+            },
+          ],
+          details: {
+            mode: "call",
+            error: "server_backoff",
+            server: serverName,
+          },
         };
       }
     }
   }
 
   let prefixMatchedServer: string | undefined;
+  let needsAuthHintServer: string | undefined;
 
   if (!serverName && !toolMeta && prefixMode !== "none") {
     const candidates = Object.keys(state.config.mcpServers)
-      .map(name => ({ name, prefix: getServerPrefix(name, prefixMode) }))
-      .filter(c => c.prefix && toolName.startsWith(c.prefix + "_"))
+      .map((name) => ({ name, prefix: getServerPrefix(name, prefixMode) }))
+      .filter((c) => c.prefix && toolName.startsWith(c.prefix + "_"))
       .sort((a, b) => b.prefix.length - a.prefix.length);
 
     for (const { name: configuredServer } of candidates) {
       const failedAgo = getFailureAgeSeconds(state, configuredServer);
       if (failedAgo !== null) continue;
       const connected = await lazyConnect(state, configuredServer);
-      if (!connected) continue;
+      if (!connected) {
+        if (
+          !needsAuthHintServer &&
+          getServerNeedsAuth(state, configuredServer)
+        ) {
+          needsAuthHintServer = configuredServer;
+        }
+        continue;
+      }
       if (!prefixMatchedServer) prefixMatchedServer = configuredServer;
-      toolMeta = findToolByName(state.toolMetadata.get(configuredServer), toolName);
+      toolMeta = findToolByName(
+        state.toolMetadata.get(configuredServer),
+        toolName,
+      );
       if (toolMeta) {
         serverName = configuredServer;
         break;
@@ -457,7 +656,27 @@ export async function executeCall(
   }
 
   if (!serverName || !toolMeta) {
-    const hintServer = serverName ?? prefixMatchedServer;
+    const hintServer = serverName ?? prefixMatchedServer ?? needsAuthHintServer;
+    const authRequirement = hintServer
+      ? getServerNeedsAuth(state, hintServer)
+      : undefined;
+    if (authRequirement) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Server "${hintServer}" needs authentication. Complete the browser flow and retry.`,
+          },
+        ],
+        details: {
+          mode: "call",
+          error: "needs_auth",
+          server: hintServer,
+          message: authRequirement.message,
+        },
+      };
+    }
+
     const available = hintServer ? getToolNames(state, hintServer) : [];
     let msg = `Tool "${toolName}" not found.`;
     if (available.length > 0) {
@@ -467,7 +686,12 @@ export async function executeCall(
     }
     return {
       content: [{ type: "text" as const, text: msg }],
-      details: { mode: "call", error: "tool_not_found", requestedTool: toolName, hintServer },
+      details: {
+        mode: "call",
+        error: "tool_not_found",
+        requestedTool: toolName,
+        hintServer,
+      },
     };
   }
 
@@ -476,7 +700,12 @@ export async function executeCall(
     const failedAgo = getFailureAgeSeconds(state, serverName);
     if (failedAgo !== null) {
       return {
-        content: [{ type: "text" as const, text: `Server "${serverName}" not available (last failed ${failedAgo}s ago)` }],
+        content: [
+          {
+            type: "text" as const,
+            text: `Server "${serverName}" not available (last failed ${failedAgo}s ago)`,
+          },
+        ],
         details: { mode: "call", error: "server_backoff", server: serverName },
       };
     }
@@ -484,8 +713,17 @@ export async function executeCall(
     const definition = state.config.mcpServers[serverName];
     if (!definition) {
       return {
-        content: [{ type: "text" as const, text: `Server "${serverName}" not connected` }],
-        details: { mode: "call", error: "server_not_connected", server: serverName },
+        content: [
+          {
+            type: "text" as const,
+            text: `Server "${serverName}" not connected`,
+          },
+        ],
+        details: {
+          mode: "call",
+          error: "server_not_connected",
+          server: serverName,
+        },
       };
     }
 
@@ -493,7 +731,11 @@ export async function executeCall(
       if (state.ui) {
         state.ui.setStatus("mcp", `MCP: connecting to ${serverName}...`);
       }
-      connection = await state.manager.connect(serverName, definition);
+      connection = await state.manager.connect(serverName, definition, {
+        interactiveAllowed: true,
+        interactionReason: "user",
+      });
+      clearServerNeedsAuth(state, serverName);
       state.failureTracker.delete(serverName);
       updateServerMetadata(state, serverName);
       updateMetadataCache(state, serverName);
@@ -501,20 +743,64 @@ export async function executeCall(
       toolMeta = findToolByName(state.toolMetadata.get(serverName), toolName);
       if (!toolMeta) {
         const available = getToolNames(state, serverName);
-        const hint = available.length > 0
-          ? `Available tools on "${serverName}": ${available.join(", ")}`
-          : `Server "${serverName}" has no tools.`;
+        const hint =
+          available.length > 0
+            ? `Available tools on "${serverName}": ${available.join(", ")}`
+            : `Server "${serverName}" has no tools.`;
         return {
-          content: [{ type: "text" as const, text: `Tool "${toolName}" not found on "${serverName}" after reconnect. ${hint}` }],
-          details: { mode: "call", error: "tool_not_found_after_reconnect", requestedTool: toolName },
+          content: [
+            {
+              type: "text" as const,
+              text: `Tool "${toolName}" not found on "${serverName}" after reconnect. ${hint}`,
+            },
+          ],
+          details: {
+            mode: "call",
+            error: "tool_not_found_after_reconnect",
+            requestedTool: toolName,
+          },
         };
       }
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (isNeedsAuthError(error)) {
+        const needsAuthMessage = getNeedsAuthMessage(
+          error,
+          serverName,
+          message,
+        );
+        state.failureTracker.delete(serverName);
+        markServerNeedsAuth(state, serverName, {
+          error,
+          reason: "user",
+          message: needsAuthMessage,
+        });
+        updateStatusBar(state);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Server "${serverName}" needs authentication. Complete the browser flow and retry.`,
+            },
+          ],
+          details: {
+            mode: "call",
+            error: "needs_auth",
+            server: serverName,
+            message: needsAuthMessage,
+          },
+        };
+      }
+
       state.failureTracker.set(serverName, Date.now());
       updateStatusBar(state);
-      const message = error instanceof Error ? error.message : String(error);
       return {
-        content: [{ type: "text" as const, text: `Failed to connect to "${serverName}": ${message}` }],
+        content: [
+          {
+            type: "text" as const,
+            text: `Failed to connect to "${serverName}": ${message}`,
+          },
+        ],
         details: { mode: "call", error: "connect_failed", message },
       };
     }
@@ -527,14 +813,28 @@ export async function executeCall(
     state.manager.incrementInFlight(serverName);
 
     if (toolMeta.resourceUri) {
-      const result = await connection.client.readResource({ uri: toolMeta.resourceUri });
-      const content = (result.contents ?? []).map(c => ({
+      const result = await connection.client.readResource({
+        uri: toolMeta.resourceUri,
+      });
+      const content = (result.contents ?? []).map((c) => ({
         type: "text" as const,
-        text: "text" in c ? c.text : ("blob" in c ? `[Binary data: ${(c as { mimeType?: string }).mimeType ?? "unknown"}]` : JSON.stringify(c)),
+        text:
+          "text" in c
+            ? c.text
+            : "blob" in c
+              ? `[Binary data: ${(c as { mimeType?: string }).mimeType ?? "unknown"}]`
+              : JSON.stringify(c),
       }));
       return {
-        content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty resource)" }],
-        details: { mode: "call", resourceUri: toolMeta.resourceUri, server: serverName },
+        content:
+          content.length > 0
+            ? content
+            : [{ type: "text" as const, text: "(empty resource)" }],
+        details: {
+          mode: "call",
+          resourceUri: toolMeta.resourceUri,
+          server: serverName,
+        },
       };
     }
 
@@ -556,7 +856,9 @@ export async function executeCall(
 
     if (toolMeta.uiResourceUri) {
       const result = await resultPromise;
-      uiSession?.sendToolResult(result as unknown as import("@modelcontextprotocol/sdk/types.js").CallToolResult);
+      uiSession?.sendToolResult(
+        result as unknown as import("@modelcontextprotocol/sdk/types.js").CallToolResult,
+      );
       const mcpContent = (result.content ?? []) as McpContent[];
       const content = transformMcpContent(mcpContent);
 
@@ -581,8 +883,16 @@ export async function executeCall(
         ? "Updated the open UI."
         : "📺 Interactive UI is now open in your browser. I'll respond to your prompts and intents as you interact with it.";
       return {
-        content: [{ type: "text" as const, text: `${resultText}\n\n${uiMessage}` }],
-        details: { mode: "call", mcpResult: result, server: serverName, tool: toolMeta.originalName, uiOpen: true },
+        content: [
+          { type: "text" as const, text: `${resultText}\n\n${uiMessage}` },
+        ],
+        details: {
+          mode: "call",
+          mcpResult: result,
+          server: serverName,
+          tool: toolMeta.originalName,
+          uiOpen: true,
+        },
       };
     }
 
@@ -592,10 +902,11 @@ export async function executeCall(
     const content = transformMcpContent(mcpContent);
 
     if (result.isError) {
-      const errorText = content
-        .filter((c) => c.type === "text")
-        .map((c) => (c as { text: string }).text)
-        .join("\n") || "Tool execution failed";
+      const errorText =
+        content
+          .filter((c) => c.type === "text")
+          .map((c) => (c as { text: string }).text)
+          .join("\n") || "Tool execution failed";
 
       let errorWithSchema = `Error: ${errorText}`;
       if (toolMeta.inputSchema) {
@@ -609,8 +920,16 @@ export async function executeCall(
     }
 
     return {
-      content: content.length > 0 ? content : [{ type: "text" as const, text: "(empty result)" }],
-      details: { mode: "call", mcpResult: result, server: serverName, tool: toolMeta.originalName },
+      content:
+        content.length > 0
+          ? content
+          : [{ type: "text" as const, text: "(empty result)" }],
+      details: {
+        mode: "call",
+        mcpResult: result,
+        server: serverName,
+        tool: toolMeta.originalName,
+      },
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

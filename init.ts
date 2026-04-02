@@ -1,6 +1,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
-import type { McpExtensionState } from "./state.js";
-import type { ToolMetadata } from "./types.js";
+import type { AuthInteractionReason } from "./auth-provider.js";
+import {
+  clearServerNeedsAuth,
+  isNeedsAuthError,
+  markServerNeedsAuth,
+  serverNeedsAuth,
+  type McpExtensionState,
+} from "./state.js";
+import type { ToolMetadata, ServerDefinition } from "./types.js";
 import { existsSync } from "node:fs";
 import { loadMcpConfig } from "./config.js";
 import { ConsentManager } from "./consent-manager.js";
@@ -24,6 +31,42 @@ import { logger } from "./logger.js";
 
 const FAILURE_BACKOFF_MS = 60 * 1000;
 
+interface ManagedConnectOptions {
+  interactiveAllowed?: boolean;
+  interactionReason?: AuthInteractionReason;
+}
+
+function connectWithPolicy(
+  manager: McpServerManager,
+  name: string,
+  definition: ServerDefinition,
+  options?: ManagedConnectOptions,
+): Promise<Awaited<ReturnType<McpServerManager["connect"]>>> {
+  const managed = manager as unknown as {
+    connect: (
+      serverName: string,
+      serverDefinition: ServerDefinition,
+      connectOptions?: ManagedConnectOptions,
+    ) => Promise<Awaited<ReturnType<McpServerManager["connect"]>>>;
+  };
+
+  return managed.connect(name, definition, options);
+}
+
+function handleNeedsAuthState(
+  state: McpExtensionState,
+  serverName: string,
+  error: unknown,
+  fallbackReason: AuthInteractionReason,
+): void {
+  state.failureTracker.delete(serverName);
+  markServerNeedsAuth(state, serverName, {
+    error,
+    reason: fallbackReason,
+    message: error instanceof Error ? error.message : String(error),
+  });
+}
+
 export async function initializeMcp(
   pi: ExtensionAPI,
   ctx: ExtensionContext
@@ -35,6 +78,7 @@ export async function initializeMcp(
   const lifecycle = new McpLifecycleManager(manager);
   const toolMetadata = new Map<string, ToolMetadata[]>();
   const failureTracker = new Map<string, number>();
+  const authRequirements = new Map<string, import("./state.js").ServerAuthRequirement>();
   const uiResourceHandler = new UiResourceHandler(manager);
   const consentManager = new ConsentManager("once-per-server");
   const ui = ctx.hasUI ? ctx.ui : undefined;
@@ -44,6 +88,7 @@ export async function initializeMcp(
     toolMetadata,
     config,
     failureTracker,
+    authRequirements,
     uiResourceHandler,
     consentManager,
     uiServer: null,
@@ -107,22 +152,36 @@ export async function initializeMcp(
 
   const results = await parallelLimit(startupServers, 10, async ([name, definition]) => {
     try {
-      const connection = await manager.connect(name, definition);
-      return { name, definition, connection, error: null };
+      const connection = await connectWithPolicy(manager, name, definition, {
+        interactiveAllowed: false,
+        interactionReason: "startup",
+      });
+      return { name, definition, connection, error: null as unknown };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { name, definition, connection: null, error: message };
+      return { name, definition, connection: null, error };
     }
   });
 
   for (const { name, definition, connection, error } of results) {
     if (error || !connection) {
-      if (ctx.hasUI) {
-        ctx.ui.notify(`MCP: Failed to connect to ${name}: ${error}`, "error");
+      if (isNeedsAuthError(error)) {
+        handleNeedsAuthState(state, name, error, "startup");
+        if (ctx.hasUI) {
+          ctx.ui.notify(`MCP: ${name} needs authentication before it can connect`, "warning");
+        }
+        logger.debug(`MCP: ${name} needs authentication during startup`);
+        continue;
       }
-      console.error(`MCP: Failed to connect to ${name}: ${error}`);
+
+      const message = error instanceof Error ? error.message : String(error);
+      if (ctx.hasUI) {
+        ctx.ui.notify(`MCP: Failed to connect to ${name}: ${message}`, "error");
+      }
+      console.error(`MCP: Failed to connect to ${name}: ${message}`);
       continue;
     }
+
+    clearServerNeedsAuth(state, name);
 
     const { metadata, failedTools } = buildToolMetadata(connection.tools, connection.resources, definition, name, prefix);
     toolMetadata.set(name, metadata);
@@ -137,13 +196,19 @@ export async function initializeMcp(
   }
 
   const connectedCount = results.filter(r => r.connection).length;
-  const failedCount = results.filter(r => r.error).length;
-  if (ctx.hasUI && connectedCount > 0) {
+  const needsAuthCount = results.filter(r => isNeedsAuthError(r.error)).length;
+  const failedCount = results.filter(r => r.error && !isNeedsAuthError(r.error)).length;
+  if (ctx.hasUI && (connectedCount > 0 || needsAuthCount > 0)) {
     const totalTools = totalToolCount(state);
-    const msg = failedCount > 0
+    let msg = failedCount > 0
       ? `MCP: ${connectedCount}/${startupServers.length} servers connected (${totalTools} tools)`
       : `MCP: ${connectedCount} servers connected (${totalTools} tools)`;
-    ctx.ui.notify(msg, "info");
+
+    if (needsAuthCount > 0) {
+      msg += ` · ${needsAuthCount} need auth`;
+    }
+
+    ctx.ui.notify(msg, needsAuthCount > 0 ? "warning" : "info");
   }
 
   const envDirect = process.env.MCP_DIRECT_TOOLS;
@@ -168,13 +233,20 @@ export async function initializeMcp(
         async (name) => {
           const definition = config.mcpServers[name];
           try {
-            const connection = await manager.connect(name, definition);
+            const connection = await connectWithPolicy(manager, name, definition, {
+              interactiveAllowed: false,
+              interactionReason: "startup",
+            });
+            clearServerNeedsAuth(state, name);
             const { metadata } = buildToolMetadata(connection.tools, connection.resources, definition, name, prefix);
             toolMetadata.set(name, metadata);
             updateMetadataCache(state, name);
-            return { name, ok: true };
-          } catch {
-            return { name, ok: false };
+            return { name, ok: true, error: null as unknown };
+          } catch (error) {
+            if (isNeedsAuthError(error)) {
+              handleNeedsAuthState(state, name, error, "startup");
+            }
+            return { name, ok: false, error };
           }
         },
       );
@@ -186,9 +258,15 @@ export async function initializeMcp(
   }
 
   lifecycle.setReconnectCallback((serverName) => {
+    clearServerNeedsAuth(state, serverName);
     updateServerMetadata(state, serverName);
     updateMetadataCache(state, serverName);
     state.failureTracker.delete(serverName);
+    updateStatusBar(state);
+  });
+
+  lifecycle.setAuthRequiredCallback((serverName, error) => {
+    handleNeedsAuthState(state, serverName, error, "reconnect");
     updateStatusBar(state);
   });
 
@@ -266,7 +344,11 @@ export function updateStatusBar(state: McpExtensionState): void {
     return;
   }
   const connectedCount = state.manager.getAllConnections().size;
-  ui.setStatus("mcp", ui.theme.fg("accent", `MCP: ${connectedCount}/${total} servers`));
+  const needsAuthCount = state.authRequirements.size;
+  const status = needsAuthCount > 0
+    ? `MCP: ${connectedCount}/${total} servers · ${needsAuthCount} need auth`
+    : `MCP: ${connectedCount}/${total} servers`;
+  ui.setStatus("mcp", ui.theme.fg("accent", status));
 }
 
 export function getFailureAgeSeconds(state: McpExtensionState, serverName: string): number | null {
@@ -280,12 +362,13 @@ export function getFailureAgeSeconds(state: McpExtensionState, serverName: strin
 export async function lazyConnect(state: McpExtensionState, serverName: string): Promise<boolean> {
   const connection = state.manager.getConnection(serverName);
   if (connection?.status === "connected") {
+    clearServerNeedsAuth(state, serverName);
     updateServerMetadata(state, serverName);
     return true;
   }
 
   const failedAgo = getFailureAgeSeconds(state, serverName);
-  if (failedAgo !== null) return false;
+  if (failedAgo !== null && !serverNeedsAuth(state, serverName)) return false;
 
   const definition = state.config.mcpServers[serverName];
   if (!definition) return false;
@@ -294,13 +377,23 @@ export async function lazyConnect(state: McpExtensionState, serverName: string):
     if (state.ui) {
       state.ui.setStatus("mcp", `MCP: connecting to ${serverName}...`);
     }
-    await state.manager.connect(serverName, definition);
+    await connectWithPolicy(state.manager, serverName, definition, {
+      interactiveAllowed: true,
+      interactionReason: "user",
+    });
+    clearServerNeedsAuth(state, serverName);
     state.failureTracker.delete(serverName);
     updateServerMetadata(state, serverName);
     updateMetadataCache(state, serverName);
     updateStatusBar(state);
     return true;
-  } catch {
+  } catch (error) {
+    if (isNeedsAuthError(error)) {
+      handleNeedsAuthState(state, serverName, error, "user");
+      updateStatusBar(state);
+      return false;
+    }
+
     state.failureTracker.set(serverName, Date.now());
     updateStatusBar(state);
     return false;

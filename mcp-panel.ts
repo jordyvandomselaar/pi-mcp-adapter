@@ -1,5 +1,6 @@
 import { matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
-import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerProvenance } from "./types.js";
+import type { McpConfig, McpPanelCallbacks, McpPanelResult, ServerDefinition, ServerProvenance } from "./types.js";
+import { getServerAuthType, usesClientCredentialsOAuth, usesInteractiveOAuth } from "./types.js";
 import { resourceNameToToolName } from "./resource-tools.js";
 import type { MetadataCache, ServerCacheEntry, CachedTool } from "./metadata-cache.js";
 
@@ -90,6 +91,7 @@ interface ToolState {
 
 interface ServerState {
   name: string;
+  definition: ServerDefinition;
   expanded: boolean;
   source: "user" | "project" | "import";
   importKind?: string;
@@ -177,6 +179,7 @@ class McpPanel {
 
       this.servers.push({
         name: serverName,
+        definition,
         expanded: false,
         source: prov?.kind ?? "user",
         importKind: prov?.importKind,
@@ -244,6 +247,42 @@ class McpPanel {
 
   private updateDirty(): void {
     this.dirty = this.servers.some((s) => s.tools.some((t) => t.isDirect !== t.wasDirect));
+  }
+
+  private getReconnectNotice(server: ServerState): string {
+    if (usesClientCredentialsOAuth(server.definition)) {
+      return `Connecting to ${server.name} — requesting a token with configured client credentials. No browser should open.`;
+    }
+
+    if (usesInteractiveOAuth(server.definition)) {
+      return `Connecting to ${server.name} — Pi may open your system browser for loopback sign-in.`;
+    }
+
+    return `Connecting to ${server.name}...`;
+  }
+
+  private getNeedsAuthNotice(server: ServerState): string {
+    if (usesClientCredentialsOAuth(server.definition)) {
+      return "Auth required — Ctrl+R retries non-interactive client_credentials. No browser will open.";
+    }
+
+    return "Auth required — Ctrl+R starts browser sign-in. Background reconnects stay no-browser.";
+  }
+
+  private getAuthModeLabel(server: ServerState): string | null {
+    if (getServerAuthType(server.definition) !== "oauth") {
+      return null;
+    }
+
+    if (usesClientCredentialsOAuth(server.definition)) {
+      return "(client credentials)";
+    }
+
+    if (usesInteractiveOAuth(server.definition)) {
+      return "(browser auth)";
+    }
+
+    return "(oauth)";
   }
 
   private buildResult(): McpPanelResult {
@@ -352,7 +391,7 @@ class McpPanel {
       const server = this.servers[item.serverIndex];
       if (item.type === "server") {
         if (server.connectionStatus === "needs-auth") {
-          this.authNotice = `OAuth required — run /mcp-auth ${server.name} after closing this panel`;
+          this.authNotice = this.getNeedsAuthNotice(server);
           return;
         }
         server.expanded = !server.expanded;
@@ -374,8 +413,9 @@ class McpPanel {
       if (!item) return;
       const server = this.servers[item.serverIndex];
       if (server.connectionStatus === "connecting") return;
+      this.authNotice = this.getReconnectNotice(server);
       server.connectionStatus = "connecting";
-      this.callbacks.reconnect(server.name).then(() => {
+      this.callbacks.reconnect(server.name).then((connected) => {
         server.connectionStatus = this.callbacks.getConnectionStatus(server.name);
         if (server.connectionStatus === "connected") {
           const entry = this.callbacks.refreshCacheAfterReconnect(server.name);
@@ -384,9 +424,11 @@ class McpPanel {
           }
           server.hasCachedData = true;
         }
+        this.authNotice = this.describeReconnectOutcome(server, connected);
         this.tui.requestRender();
       }).catch(() => {
         server.connectionStatus = "failed";
+        this.authNotice = `Reconnect failed for ${server.name}. Check the browser flow or logs, then press Ctrl+R to retry.`;
         this.tui.requestRender();
       });
       return;
@@ -507,6 +549,46 @@ class McpPanel {
     this.updateDirty();
   }
 
+  private describeReconnectOutcome(server: ServerState, connected: boolean): string | null {
+    if (server.connectionStatus === "connected") {
+      return usesClientCredentialsOAuth(server.definition)
+        ? `Connected to ${server.name} using client_credentials.`
+        : `Connected to ${server.name}.`;
+    }
+
+    if (server.connectionStatus === "needs-auth") {
+      return usesClientCredentialsOAuth(server.definition)
+        ? `Authentication is still required for ${server.name}. Check the configured client credentials or token endpoint settings, then press Ctrl+R to retry.`
+        : "Still needs auth — if browser sign-in or the loopback callback failed, press Ctrl+R again.";
+    }
+
+    if (server.connectionStatus === "failed" || !connected) {
+      return usesClientCredentialsOAuth(server.definition)
+        ? `Reconnect failed for ${server.name}. Check the configured client credentials or token endpoint settings, then press Ctrl+R to retry.`
+        : "Reconnect failed — check the browser flow, loopback callback, or logs, then press Ctrl+R.";
+    }
+
+    return `Reconnect did not complete for ${server.name}. Press Ctrl+R to retry.`;
+  }
+
+  private renderConnectionBadge(server: ServerState): string {
+    const t = this.t;
+
+    switch (server.connectionStatus) {
+      case "connected":
+        return fg(t.direct, "[connected]");
+      case "needs-auth":
+        return fg(t.needsAuth, "[needs auth]");
+      case "failed":
+        return fg(t.cancel, "[failed]");
+      case "connecting":
+        return fg(t.needsAuth, "[connecting]");
+      case "idle":
+      default:
+        return "";
+    }
+  }
+
   render(width: number): string[] {
     const innerW = width - 2;
     const lines: string[] = [];
@@ -609,8 +691,8 @@ class McpPanel {
     const hints = [
       italic("↑↓") + " navigate",
       italic("space") + " toggle",
-      italic("⏎") + " expand",
-      italic("ctrl+r") + " reconnect",
+      italic("⏎") + " expand/hint",
+      italic("ctrl+r") + " connect/auth",
       italic("?") + " desc search",
       italic("ctrl+s") + " save",
       italic("esc") + " clear/close",
@@ -649,10 +731,9 @@ class McpPanel {
 
     const nameStr = isCursor ? bold(fg(t.selected, server.name)) : server.name;
     const importLabel = server.source === "import" ? fg(t.description, ` (${server.importKind ?? "import"})`) : "";
-
-    if (!server.hasCachedData) {
-      return `${prefix}   ${nameStr}${importLabel}  ${fg(t.description, "(not cached)")}`;
-    }
+    const authLabel = this.getAuthModeLabel(server);
+    const authSuffix = authLabel ? fg(t.description, ` ${authLabel}`) : "";
+    const statusBadge = this.renderConnectionBadge(server);
 
     const directCount = server.tools.filter((t) => t.isDirect).length;
     const totalCount = server.tools.length;
@@ -663,17 +744,23 @@ class McpPanel {
       toggleIcon = fg(t.needsAuth, "◐");
     }
 
-    let toolInfo = "";
+    const suffixParts: string[] = [];
+    if (statusBadge) suffixParts.push(statusBadge);
+    if (!server.hasCachedData) {
+      suffixParts.push(fg(t.description, "(not cached)"));
+    }
+
     if (totalCount > 0) {
-      toolInfo = `${directCount}/${totalCount}`;
+      let toolInfo = `${directCount}/${totalCount}`;
       if (directCount > 0) {
         const tokens = server.tools.filter((t) => t.isDirect).reduce((s, t) => s + t.estimatedTokens, 0);
         toolInfo += `  ~${tokens.toLocaleString()}`;
       }
-      toolInfo = fg(t.description, toolInfo);
+      suffixParts.push(fg(t.description, toolInfo));
     }
 
-    return `${prefix} ${toggleIcon} ${nameStr}${importLabel}  ${toolInfo}`;
+    const suffix = suffixParts.length > 0 ? `  ${suffixParts.join("  ")}` : "";
+    return `${prefix} ${toggleIcon} ${nameStr}${importLabel}${authSuffix}${suffix}`;
   }
 
   private renderToolRow(tool: ToolState, isCursor: boolean, innerW: number): string {

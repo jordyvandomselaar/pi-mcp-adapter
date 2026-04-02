@@ -1,8 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { InvalidAuthCallbackError } from "../auth-session-manager.js";
-import type { MetadataCache } from "../metadata-cache.js";
 import type { McpExtensionState } from "../state.js";
-import type { McpConfig } from "../types.js";
 import type { McpServerManager } from "../server-manager.js";
 
 const loadMetadataCache = vi.fn(() => ({ version: 1, servers: {} }));
@@ -19,47 +17,8 @@ vi.mock("../metadata-cache.js", async () => {
   };
 });
 
-describe("direct-tools", () => {
-  it("documents the ui-messages action", async () => {
-    const { buildProxyDescription } = await import("../direct-tools.js");
-    const config: McpConfig = {
-      mcpServers: {
-        demo: {
-          command: "npx",
-          args: ["-y", "demo-server"],
-        },
-      },
-    };
-
-    const cache: MetadataCache = {
-      version: 1,
-      servers: {
-        demo: {
-          configHash: "hash",
-          cachedAt: Date.now(),
-          tools: [
-            {
-              name: "launch_app",
-              description: "Launch the demo app",
-              inputSchema: { type: "object", properties: {} },
-            },
-          ],
-          resources: [],
-        },
-      },
-    };
-
-    const description = buildProxyDescription(config, cache, []);
-
-    expect(description).toContain('mcp({ action: "ui-messages" })');
-    expect(description).toContain(
-      "Retrieve accumulated messages from completed UI sessions",
-    );
-  });
-
-  it("preserves direct tool execution through auth-aware lazy connect", async () => {
-    const { createDirectToolExecutor } = await import("../direct-tools.js");
-
+describe("executeCall", () => {
+  it("preserves the single-proxy tool flow after auth-aware lazy connect", async () => {
     let connection:
       | {
           status: "connected";
@@ -83,8 +42,11 @@ describe("direct-tools", () => {
           tools: [
             {
               name: "ping",
-              description: "Ping directly",
-              inputSchema: { type: "object", properties: {} },
+              description: "Ping through the proxy",
+              inputSchema: {
+                type: "object",
+                properties: { value: { type: "number" } },
+              },
             },
           ],
           resources: [],
@@ -123,19 +85,8 @@ describe("direct-tools", () => {
       openBrowser: vi.fn().mockResolvedValue(undefined),
     } as unknown as McpExtensionState;
 
-    const execute = createDirectToolExecutor(
-      () => state,
-      () => null,
-      {
-        serverName: "demo",
-        originalName: "ping",
-        prefixedName: "demo_ping",
-        description: "Ping directly",
-        inputSchema: { type: "object", properties: {} },
-      },
-    );
-
-    const result = await execute("call-1", {});
+    const { executeCall } = await import("../proxy-modes.js");
+    const result = await executeCall(state, "demo_ping", { value: 1 }, "demo");
 
     expect(manager.connect).toHaveBeenCalledWith(
       "demo",
@@ -147,16 +98,14 @@ describe("direct-tools", () => {
     );
     expect(connection?.client.callTool).toHaveBeenCalledWith({
       name: "ping",
-      arguments: {},
+      arguments: { value: 1 },
       _meta: undefined,
     });
     expect(result.content).toEqual([{ type: "text", text: "pong" }]);
     expect(saveMetadataCache).toHaveBeenCalled();
   });
 
-  it("returns needs-auth instead of generic unavailability after an interactive callback failure", async () => {
-    const { createDirectToolExecutor } = await import("../direct-tools.js");
-
+  it("returns needs-auth instead of tool-not-found when lazy auth fails before metadata loads", async () => {
     const manager = {
       getConnection: vi.fn().mockReturnValue(undefined),
       connect: vi
@@ -193,19 +142,8 @@ describe("direct-tools", () => {
       openBrowser: vi.fn().mockResolvedValue(undefined),
     } as unknown as McpExtensionState;
 
-    const execute = createDirectToolExecutor(
-      () => state,
-      () => null,
-      {
-        serverName: "demo",
-        originalName: "ping",
-        prefixedName: "demo_ping",
-        description: "Ping directly",
-        inputSchema: { type: "object", properties: {} },
-      },
-    );
-
-    const result = await execute("call-1", {});
+    const { executeCall } = await import("../proxy-modes.js");
+    const result = await executeCall(state, "demo_ping", { value: 1 }, "demo");
 
     expect(manager.connect).toHaveBeenCalledWith(
       "demo",
@@ -218,10 +156,11 @@ describe("direct-tools", () => {
     expect(result.content).toEqual([
       {
         type: "text",
-        text: 'MCP server "demo" needs authentication. Complete the browser flow and retry.',
+        text: 'Server "demo" needs authentication. Complete the browser flow and retry.',
       },
     ]);
     expect(result.details).toMatchObject({
+      mode: "call",
       error: "needs_auth",
       server: "demo",
       message:
