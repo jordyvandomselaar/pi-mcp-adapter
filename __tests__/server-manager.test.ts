@@ -61,6 +61,13 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+}
+
 function createOAuthDefinition(): ServerDefinition {
   return {
     url: "https://api.example.com/mcp",
@@ -246,6 +253,98 @@ describe("McpServerManager HTTP transport selection", () => {
       expect(harness.streamableTransports.length).toBeGreaterThan(0);
       expect(harness.sseTransports).toHaveLength(0);
     } finally {
+      harness.cleanup();
+    }
+  });
+
+  it("infers OAuth for HTTP servers without explicit auth when discovery succeeds", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const requestUrl = typeof input === "string"
+        ? new URL(input)
+        : input instanceof URL
+          ? input
+          : new URL(input.url);
+
+      if (requestUrl.pathname === "/.well-known/oauth-protected-resource/api/v0/mcp") {
+        return jsonResponse({
+          resource: "https://relay.example.com/api/v0/mcp",
+          authorization_servers: ["https://relay.example.com"],
+          scopes_supported: ["mcp:full"],
+        });
+      }
+
+      if (requestUrl.pathname === "/.well-known/oauth-authorization-server") {
+        return jsonResponse({
+          issuer: "https://relay.example.com",
+          authorization_endpoint: "https://relay.example.com/oauth/authorize",
+          token_endpoint: "https://relay.example.com/api/v0/oauth/token",
+          registration_endpoint: "https://relay.example.com/api/v0/oauth/register",
+          response_types_supported: ["code"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
+          token_endpoint_auth_methods_supported: ["none"],
+        });
+      }
+
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const harness = createTestManager({
+      connectHandler: async (transport) => {
+        expect(transport.authProvider).toBeTruthy();
+      },
+    });
+
+    try {
+      const transport = await (harness.manager as unknown as {
+        createHttpTransport: (
+          definition: ServerDefinition,
+          serverName: string,
+          connectOptions: ServerConnectOptions,
+        ) => Promise<FakeHttpTransport>;
+      }).createHttpTransport(
+        { url: "https://relay.example.com/api/v0/mcp" },
+        "relay",
+        { interactiveAllowed: true, interactionReason: "user" },
+      );
+
+      expect(transport.kind).toBe("streamable");
+      expect(transport.authProvider).toBeTruthy();
+    } finally {
+      global.fetch = originalFetch;
+      harness.cleanup();
+    }
+  });
+
+  it("optimistically uses OAuth for direct user auth retries when discovery fails", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(async () => {
+      throw new Error("discovery unavailable");
+    }) as typeof fetch;
+
+    const harness = createTestManager({
+      connectHandler: async (transport) => {
+        expect(transport.authProvider).toBeTruthy();
+      },
+    });
+
+    try {
+      const transport = await (harness.manager as unknown as {
+        createHttpTransport: (
+          definition: ServerDefinition,
+          serverName: string,
+          connectOptions: ServerConnectOptions,
+        ) => Promise<FakeHttpTransport>;
+      }).createHttpTransport(
+        { url: "https://relay.example.com/api/v0/mcp" },
+        "relay",
+        { interactiveAllowed: true, interactionReason: "user" },
+      );
+
+      expect(transport.kind).toBe("streamable");
+      expect(transport.authProvider).toBeTruthy();
+    } finally {
+      global.fetch = originalFetch;
       harness.cleanup();
     }
   });

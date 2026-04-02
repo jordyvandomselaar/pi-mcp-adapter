@@ -269,6 +269,12 @@ export type OAuthRegistrationMode = "auto" | "static" | "metadata-url" | "dynami
 export const DEFAULT_OAUTH_GRANT_TYPE: OAuthGrantType = "authorization_code";
 export const DEFAULT_OAUTH_REGISTRATION_MODE: OAuthRegistrationMode = "auto";
 
+const DEFAULT_OAUTH_AUTH_CONFIG: ResolvedOAuthAuthConfig = {
+  type: "oauth",
+  grantType: DEFAULT_OAUTH_GRANT_TYPE,
+  registration: { mode: DEFAULT_OAUTH_REGISTRATION_MODE },
+};
+
 export interface OAuthClientInformationConfig {
   clientId?: string;
   clientIdEnv?: string;
@@ -381,6 +387,31 @@ export function getOAuthAuthConfig(definition: ServerEntry): OAuthAuthConfig | u
   return definition.auth && typeof definition.auth === "object" && definition.auth.type === "oauth"
     ? definition.auth
     : undefined;
+}
+
+export function getDefaultOAuthAuthConfig(): ResolvedOAuthAuthConfig {
+  return {
+    ...DEFAULT_OAUTH_AUTH_CONFIG,
+    registration: { ...DEFAULT_OAUTH_AUTH_CONFIG.registration },
+  };
+}
+
+export function hasConfiguredAuthorizationHeader(headers?: Record<string, string>): boolean {
+  if (!headers) {
+    return false;
+  }
+
+  return Object.entries(headers).some(([key, value]) => {
+    return key.toLowerCase() === "authorization" && typeof value === "string" && value.trim().length > 0;
+  });
+}
+
+export function isPotentiallyOAuthHttpServer(definition: ServerEntry): boolean {
+  if (!definition.url) {
+    return false;
+  }
+
+  return getServerAuthType(definition) !== "bearer" && !hasConfiguredAuthorizationHeader(definition.headers);
 }
 
 export function getResolvedOAuthAuthConfig(definition: ServerEntry): ResolvedOAuthAuthConfig | undefined {

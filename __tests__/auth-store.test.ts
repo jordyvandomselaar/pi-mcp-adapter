@@ -467,6 +467,19 @@ describe("auth-store", () => {
     ).toEqual(["legacy-server"]);
   });
 
+  it("derives the same default OAuth fingerprint for HTTP servers without explicit auth config", () => {
+    const inferred: ServerEntry = {
+      url: "https://relay.example.com/api/v0/mcp",
+    };
+    const explicit: ServerEntry = {
+      url: "https://relay.example.com/api/v0/mcp",
+      auth: "oauth",
+    };
+
+    expect(createAuthFingerprintFromServer(inferred)).toBeDefined();
+    expect(createAuthFingerprintFromServer(inferred)).toBe(createAuthFingerprintFromServer(explicit));
+  });
+
   it("redacts secrets for logs while keeping durable persistence intact", () => {
     const redacted = redactAuthRecordForLogs({
       version: 1,

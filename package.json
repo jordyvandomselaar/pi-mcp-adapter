@@ -48,6 +48,7 @@
     "ui-stream-types.ts",
     "config.ts",
     "auth-provider.ts",
+    "oauth-runtime.ts",
     "auth-session-manager.ts",
     "auth-store.ts",
     "server-manager.ts",

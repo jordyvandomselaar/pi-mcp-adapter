@@ -18,8 +18,9 @@ import type {
   ServerDefinition,
 } from "./types.js";
 import {
-  getResolvedOAuthAuthConfig,
+  getDefaultOAuthAuthConfig,
   getServerAuthType,
+  isPotentiallyOAuthHttpServer,
   usesClientCredentialsOAuth,
   usesInteractiveOAuth,
 } from "./types.js";
@@ -37,6 +38,7 @@ import {
 } from "./init.js";
 import { loadMetadataCache } from "./metadata-cache.js";
 import { getStoredTokens } from "./auth-store.js";
+import { getCurrentAuthModeLabel, resolveRuntimeOAuthConfig } from "./oauth-runtime.js";
 import { buildToolMetadata } from "./tool-metadata.js";
 
 interface ManagedConnectOptions {
@@ -137,6 +139,7 @@ function getAuthStatusSummary(
   state: McpExtensionState,
   serverName: string,
   definition: ServerDefinition,
+  auth: ResolvedOAuthAuthConfig,
 ): { summary: string; note?: string } {
   const requirement = getServerNeedsAuth(state, serverName);
   const connection = state.manager.getConnection(serverName);
@@ -148,14 +151,14 @@ function getAuthStatusSummary(
 
   if (requirement) {
     return {
-      summary: usesClientCredentialsOAuth(definition)
+      summary: auth.grantType === "client_credentials"
         ? "authentication required"
         : "browser sign-in required",
       note: requirement.message,
     };
   }
 
-  if (usesInteractiveOAuth(definition)) {
+  if (auth.grantType === "authorization_code") {
     return {
       summary: tokenAvailability.hasUsableAccessToken
         ? "stored tokens available"
@@ -165,7 +168,7 @@ function getAuthStatusSummary(
     };
   }
 
-  if (usesClientCredentialsOAuth(definition)) {
+  if (auth.grantType === "client_credentials") {
     return {
       summary: tokenAvailability.hasUsableAccessToken
         ? "cached machine token available"
@@ -180,13 +183,9 @@ function buildAuthSummaryLines(
   state: McpExtensionState,
   serverName: string,
   definition: ServerDefinition,
+  auth: ResolvedOAuthAuthConfig,
 ): string[] {
-  const auth = getResolvedOAuthAuthConfig(definition);
-  if (!auth) {
-    return [`${serverName}: not configured for OAuth`];
-  }
-
-  const status = getAuthStatusSummary(state, serverName, definition);
+  const status = getAuthStatusSummary(state, serverName, definition, auth);
   const lines = [
     `${serverName}: ${status.summary}`,
     `  flow: ${auth.grantType}`,
@@ -207,18 +206,26 @@ export async function showAuthOverview(
 ): Promise<void> {
   if (!ctx.hasUI) return;
 
-  const entries = Object.entries(state.config.mcpServers).filter(
-    ([, definition]) => getServerAuthType(definition) === "oauth",
+  const entries = await Promise.all(
+    Object.entries(state.config.mcpServers).map(async ([serverName, definition]) => {
+      const auth = await resolveRuntimeOAuthConfig(serverName, definition);
+      return auth ? { serverName, definition, auth } : undefined;
+    }),
   );
+  const oauthEntries = entries.filter((entry): entry is {
+    serverName: string;
+    definition: ServerDefinition;
+    auth: ResolvedOAuthAuthConfig;
+  } => entry !== undefined);
 
-  if (entries.length === 0) {
+  if (oauthEntries.length === 0) {
     ctx.ui.notify("No OAuth-authenticated MCP servers are configured.", "info");
     return;
   }
 
   const lines = ["MCP Auth:", ""];
-  for (const [serverName, definition] of entries) {
-    lines.push(...buildAuthSummaryLines(state, serverName, definition), "");
+  for (const entry of oauthEntries) {
+    lines.push(...buildAuthSummaryLines(state, entry.serverName, entry.definition, entry.auth), "");
   }
   lines.push(...buildAuthBehaviorFooterLines(), "");
   lines.push(
@@ -438,11 +445,13 @@ export async function authenticateServer(
   }
 
   const authType = getServerAuthType(definition);
+  const auth = await resolveRuntimeOAuthConfig(serverName, definition)
+    ?? (isPotentiallyOAuthHttpServer(definition) ? getDefaultOAuthAuthConfig() : undefined);
 
-  if (authType !== "oauth") {
+  if (!auth) {
     ctx.ui.notify(
       `Server "${serverName}" does not use OAuth authentication.\n` +
-        `Current auth mode: ${authType ?? "none"}`,
+        `Current auth mode: ${authType ?? getCurrentAuthModeLabel(definition)}`,
       "error",
     );
     return;
@@ -456,20 +465,11 @@ export async function authenticateServer(
     return;
   }
 
-  const auth = getResolvedOAuthAuthConfig(definition);
-  if (!auth) {
-    ctx.ui.notify(
-      `OAuth configuration for "${serverName}" is incomplete.`,
-      "error",
-    );
-    return;
-  }
-
   const introLines = [
     `MCP auth for "${serverName}":`,
-    ...buildAuthSummaryLines(state, serverName, definition),
+    ...buildAuthSummaryLines(state, serverName, definition, auth),
     "",
-    usesInteractiveOAuth(definition)
+    auth.grantType === "authorization_code"
       ? "Starting browser-based authorization_code auth. Pi reuses stored tokens and silent refresh first; if sign-in is still required, it opens your system browser and waits for the 127.0.0.1 loopback callback."
       : "Starting non-interactive client_credentials auth. No browser will open; Pi will request a token with the configured client credentials and reuse durable auth state when possible.",
     "Pi stores tokens, client registration, and callback session state under ~/.pi/agent/mcp-auth.",
@@ -500,7 +500,7 @@ export async function authenticateServer(
   }
 
   if (
-    usesClientCredentialsOAuth(definition) &&
+    auth.grantType === "client_credentials" &&
     !result.connected &&
     !serverNeedsAuth(state, serverName)
   ) {

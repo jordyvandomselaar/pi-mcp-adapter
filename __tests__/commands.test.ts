@@ -267,6 +267,122 @@ describe("showAuthOverview", () => {
 });
 
 describe("authenticateServer", () => {
+  it("infers browser OAuth for remote HTTP servers without explicit auth config", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const requestUrl = typeof input === "string"
+        ? new URL(input)
+        : input instanceof URL
+          ? input
+          : new URL(input.url);
+
+      if (requestUrl.pathname === "/.well-known/oauth-protected-resource/api/v0/mcp") {
+        return new Response(JSON.stringify({
+          resource: "https://relay.example.com/api/v0/mcp",
+          authorization_servers: ["https://relay.example.com"],
+          scopes_supported: ["mcp:full"],
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      if (requestUrl.pathname === "/.well-known/oauth-authorization-server") {
+        return new Response(JSON.stringify({
+          issuer: "https://relay.example.com",
+          authorization_endpoint: "https://relay.example.com/oauth/authorize",
+          token_endpoint: "https://relay.example.com/api/v0/oauth/token",
+          registration_endpoint: "https://relay.example.com/api/v0/oauth/register",
+          response_types_supported: ["code"],
+          grant_types_supported: ["authorization_code", "refresh_token"],
+          token_endpoint_auth_methods_supported: ["none"],
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+
+      return new Response("not found", { status: 404 });
+    }) as typeof fetch;
+
+    const state = createBaseState();
+    state.config = {
+      mcpServers: {
+        relay: {
+          url: "https://relay.example.com/api/v0/mcp",
+        },
+      },
+      settings: {
+        toolPrefix: "server",
+      },
+    };
+
+    const manager = state.manager as unknown as {
+      close: ReturnType<typeof vi.fn>;
+      connect: ReturnType<typeof vi.fn>;
+    };
+    manager.connect.mockResolvedValue({ tools: [], resources: [] });
+
+    try {
+      const { ctx, notify } = createUiHarness();
+      await authenticateServer(state, "relay", ctx);
+
+      const text = notifiedText(notify);
+      expect(text).not.toContain('does not use OAuth authentication');
+      expect(text).toContain('MCP auth for "relay":');
+      expect(text).toContain('flow: authorization_code');
+      expect(text).toContain('Starting browser-based authorization_code auth.');
+      expect(manager.connect).toHaveBeenCalledWith("relay", state.config.mcpServers.relay, {
+        interactiveAllowed: true,
+        interactionReason: "user",
+      });
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("optimistically starts browser OAuth for HTTP servers without explicit auth when direct discovery fails", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = vi.fn(async () => {
+      throw new Error("network unavailable during discovery");
+    }) as typeof fetch;
+
+    const state = createBaseState();
+    state.config = {
+      mcpServers: {
+        relay: {
+          url: "https://relay.example.com/api/v0/mcp",
+        },
+      },
+      settings: {
+        toolPrefix: "server",
+      },
+    };
+
+    const manager = state.manager as unknown as {
+      close: ReturnType<typeof vi.fn>;
+      connect: ReturnType<typeof vi.fn>;
+    };
+    manager.connect.mockResolvedValue({ tools: [], resources: [] });
+
+    try {
+      const { ctx, notify } = createUiHarness();
+      await authenticateServer(state, "relay", ctx);
+
+      const text = notifiedText(notify);
+      expect(text).not.toContain('does not use OAuth authentication');
+      expect(text).toContain('MCP auth for "relay":');
+      expect(text).toContain('flow: authorization_code');
+      expect(text).toContain('Starting browser-based authorization_code auth.');
+      expect(manager.connect).toHaveBeenCalledWith("relay", state.config.mcpServers.relay, {
+        interactiveAllowed: true,
+        interactionReason: "user",
+      });
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it("treats legacy auth: 'oauth' config as authorization_code with auto registration", async () => {
     const state = createBaseState();
     state.config = {

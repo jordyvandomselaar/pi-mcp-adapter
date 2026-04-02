@@ -112,6 +112,8 @@ For static bearer tokens, keep using either `auth: "bearer"` or the object form:
 
 OAuth is available for HTTP transports only. Pi now uses the MCP SDK's auth-aware HTTP flow. Use either the legacy shorthand `auth: "oauth"` or the richer object form. The shorthand remains a compatibility alias for browser-based `authorization_code` with automatic registration (`grantType: "authorization_code"`, `registration.mode: "auto"`). For interactive auth, Pi reuses durable auth state and silent refresh first, then intentionally opens your system browser and completes the flow through a local `127.0.0.1` loopback callback if fresh sign-in is still required. There is no embedded browser or manual token copy/paste path.
 
+If an HTTP MCP server omits `auth` entirely, Pi now follows a Codex-style fallback: explicit bearer config still wins, but otherwise Pi will treat the server as OAuth-capable when durable OAuth tokens already exist or the server advertises OAuth metadata/protected-resource metadata.
+
 The auth object also accepts `scope` and `resource` when the upstream server requires them. `resource` overrides the RFC 8707 resource indicator selection, as long as it remains compatible with the MCP server URL / protected resource metadata. `issuer` is reserved for future auth-server discovery overrides and should be omitted for now.
 
 ```json

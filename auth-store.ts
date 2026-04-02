@@ -13,7 +13,11 @@ import type {
   OAuthRegistrationMode,
   ServerEntry,
 } from "./types.js";
-import { getResolvedOAuthAuthConfig } from "./types.js";
+import {
+  getDefaultOAuthAuthConfig,
+  getResolvedOAuthAuthConfig,
+  isPotentiallyOAuthHttpServer,
+} from "./types.js";
 
 const AUTH_STORE_VERSION = 1;
 const AUTH_STORE_ROOT = join(homedir(), ".pi", "agent", "mcp-auth");
@@ -467,7 +471,8 @@ export function createAuthFingerprintFromServer(definition: ServerEntry): string
 }
 
 export function getAuthFingerprintInputFromServer(definition: ServerEntry): AuthFingerprintInput | undefined {
-  const oauth = getResolvedOAuthAuthConfig(definition);
+  const oauth = getResolvedOAuthAuthConfig(definition)
+    ?? (isPotentiallyOAuthHttpServer(definition) ? getDefaultOAuthAuthConfig() : undefined);
   if (!definition.url || !oauth) {
     return undefined;
   }

@@ -24,8 +24,10 @@ import type {
 } from "./types.js";
 import {
   getBearerAuthConfig,
+  getDefaultOAuthAuthConfig,
   getResolvedOAuthAuthConfig,
   getServerAuthType,
+  isPotentiallyOAuthHttpServer,
   serverStreamResultPatchNotificationSchema,
   type OAuthRegistrationMode,
   type ResolvedOAuthAuthConfig,
@@ -41,6 +43,7 @@ import {
 import { LoopbackAuthSessionManager, type InteractiveAuthSessionHandle } from "./auth-session-manager.js";
 import { FileAuthStore, createAuthFingerprintFromServer } from "./auth-store.js";
 import { resolveNpxBinary } from "./npx-resolver.js";
+import { resolveRuntimeOAuthConfig } from "./oauth-runtime.js";
 import { logger } from "./logger.js";
 
 interface ServerConnection {
@@ -256,7 +259,20 @@ export class McpServerManager {
 
     const requestInit = Object.keys(headers).length > 0 ? { headers } : undefined;
 
-    if (authType !== "oauth") {
+    const oauth = serverName
+      ? await resolveRuntimeOAuthConfig(serverName, definition)
+      : getResolvedOAuthAuthConfig(definition);
+
+    const effectiveOauth = oauth
+      ?? (
+        serverName
+        && options.interactiveAllowed
+        && isPotentiallyOAuthHttpServer(definition)
+          ? getDefaultOAuthAuthConfig()
+          : undefined
+      );
+
+    if (!effectiveOauth) {
       return {
         createTransport: () => this.createHttpClientTransport(kind, url, { requestInit }),
       };
@@ -266,7 +282,12 @@ export class McpServerManager {
       throw new Error("Server name required for OAuth authentication");
     }
 
-    const { authProvider, authContext } = await this.createOAuthAuthProvider(definition, serverName, options);
+    const { authProvider, authContext } = await this.createOAuthAuthProvider(
+      definition,
+      serverName,
+      options,
+      effectiveOauth,
+    );
 
     return {
       authContext,
@@ -301,8 +322,8 @@ export class McpServerManager {
     definition: ServerDefinition,
     serverName: string,
     options: ServerConnectOptions,
+    oauth: ResolvedOAuthAuthConfig = getResolvedOAuthAuthConfig(definition)!,
   ): Promise<{ authProvider: PiOAuthClientProvider; authContext?: PendingAuthorizationContext }> {
-    const oauth = getResolvedOAuthAuthConfig(definition);
     const fingerprint = createAuthFingerprintFromServer(definition);
 
     if (!definition.url || !oauth || !fingerprint) {
