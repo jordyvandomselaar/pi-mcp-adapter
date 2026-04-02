@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-04-02
+
 ### Changed
 - OAuth auth now uses the SDK-backed HTTP flow for HTTP servers: `authorization_code` reuses stored credentials and silent refresh first, then opens the system browser and completes through a `127.0.0.1` loopback callback when user sign-in is still required.
 - Tokens, client registration, and callback session state now live in the durable store at `~/.pi/agent/mcp-auth`, so auth state survives restarts and can be reused without rerunning setup every session.
